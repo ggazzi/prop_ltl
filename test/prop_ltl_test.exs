@@ -66,5 +66,27 @@ defmodule PropLTLTest do
         )
       end
     end
+
+    test "with violated proposition" do
+      assert_raise PropLTL.ViolatedProperty, ~r/the lights remain off forever/, fn ->
+        run_simulation(
+          OnOff,
+          self(),
+          [:off, :toggle, :toggle],
+          properties do
+            invariant("the lights remain off forever", do: not state.on?)
+          end
+        )
+      end
+
+      run_simulation(
+        OnOff,
+        self(),
+        [:off, :toggle, :toggle],
+        properties do
+          invariant("the lights remain off forever", do: not state.on?)
+        end
+      )
+    end
   end
 end

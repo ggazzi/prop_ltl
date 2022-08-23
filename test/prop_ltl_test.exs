@@ -39,24 +39,28 @@ defmodule PropLTLTest do
   end
 
   describe "OnOff" do
-    test "try some steps" do
-      property =
-        prop do
-          always do
-            if state.on?, do: eventually(not state.on?)
-          end
-        end
+    test "with satisfied proposition" do
+      properties = [
+        {"the lights are eventually turned on",
+         prop do
+           eventually(state.on?)
+         end}
+      ]
 
-      property =
-        prop do
-          eventually(state.on?)
-        end
+      assert :ok == run_simulation(OnOff, self(), [:toggle], properties)
+    end
 
-      {state, {p, env}} = init_simulation(OnOff, self(), property)
-      assert p == property
+    test "with failed proposition" do
+      properties = [
+        {"the lights are eventually turned on",
+         prop do
+           eventually(state.on?)
+         end}
+      ]
 
-      {state, {p, env}} = step_simulation(OnOff, :toggle, state, {p, env})
-      assert p == true
+      assert_raise PropLTL.ViolatedProperty, ~r/lights are eventually turned on/, fn ->
+        run_simulation(OnOff, self(), [:off, :off], properties)
+      end
     end
   end
 end

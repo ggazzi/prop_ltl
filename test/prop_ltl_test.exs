@@ -43,7 +43,7 @@ defmodule PropLTLTest do
       property =
         prop do
           always do
-            state.on? -- eventually(not state.on?)
+            if state.on?, do: eventually(not state.on?)
           end
         end
 

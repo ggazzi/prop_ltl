@@ -36,19 +36,21 @@ defmodule PropLTL.Proposition do
 
   ## Examples
 
-      iex> simplify prop (true or not false) -- false
+      iex> simplify prop(
+      ...>   if true or not false, do: false
+      ...> )
       false
 
-      iex> simplify prop true or (not false -- false)
+      iex> simplify prop true or (if not false, do: false)
       true
 
       iex> simplify prop not (always do
-      ...>   true -- weak_until(false, true)
+      ...>   if true, do: weak_until(false, true)
       ...> end)
       prop eventually(until(true, false))
 
       iex> p = simplify prop not (always do
-      ...>   (x == 1) -- eventually(x == 2)
+      ...>   if x == 1, do: eventually(x == 2)
       ...> end)
       iex> match?(
       ...>   prop(
@@ -115,10 +117,10 @@ defmodule PropLTL.Proposition do
 
   ## Examples
 
-    iex> unfold prop always(false -- eventually(true))
+    iex> unfold prop always(if false, do: eventually(true))
     prop do
-      (false -- (true or next_strong(eventually(true))))
-      and next_weak(always(false -- eventually true))
+      ( if false, do: true or next_strong( eventually(true) ) )
+      and next_weak(always(if false, do: eventually true))
     end
   """
   @spec unfold(prop) :: guarded_prop
@@ -149,12 +151,14 @@ defmodule PropLTL.Proposition do
 
   ## Examples
 
-    iex> p = prop (let x = 1) -- (x == 1)
+    iex> p = prop do
+    ...>   if (let x = 1), do: x == 1
+    ...> end
     iex> {q, env} = step(p, %{})
     iex> env
     %{x: 1}
     iex> q
-    prop true -- true
+    prop( if true, do: true )
 
     iex> p = prop (x == 1) and (let x = 1)
     iex> {q, env} = step(p, %{})
@@ -270,11 +274,10 @@ defmodule PropLTL.Proposition do
 
   ## Examples
 
-      iex> prop (true or not false) -- true
-      {:implies, {:or, true, {:not, false}}, true}
-
-      iex> prop true or not false -- true
-      {:or, true, {:implies, {:not, false}, :true}}
+      iex> prop do
+      ...>   if true or not false, do: true
+      ...> end
+      {:implies, {:or, true, {:not, false}}, :true}
 
       iex> p = prop always not x == 2
       iex> match?({:always, {:expr, _}}, p)
@@ -286,7 +289,7 @@ defmodule PropLTL.Proposition do
 
       iex> p = prop do
       ...>   always do
-      ...>     (let orig = x) -- until(x > orig, x == orig)
+      ...>     if (let orig = x), do: until(x > orig, x == orig)
       ...>   end
       ...> end
       iex> match?(
@@ -348,7 +351,7 @@ defmodule PropLTL.Proposition do
     end
   end
 
-  defp translate_prop({:--, _opts, [prop1, prop2]}, caller) do
+  defp translate_prop({:if, _opts, [prop1, [do: prop2]]}, caller) do
     quote do
       {:implies, unquote(translate_prop(prop1, caller)), unquote(translate_prop(prop2, caller))}
     end

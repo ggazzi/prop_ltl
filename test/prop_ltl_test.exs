@@ -1,6 +1,5 @@
 defmodule PropLTLTest do
   use ExUnit.Case
-  import PropLTL.Proposition
   import PropLTL
   doctest PropLTL
 
@@ -40,26 +39,31 @@ defmodule PropLTLTest do
 
   describe "OnOff" do
     test "with satisfied proposition" do
-      properties = [
-        {"the lights are eventually turned on",
-         prop do
-           eventually(state.on?)
-         end}
-      ]
-
-      assert :ok == run_simulation(OnOff, self(), [:toggle], properties)
+      assert :ok ==
+               run_simulation(
+                 OnOff,
+                 self(),
+                 [:toggle],
+                 properties do
+                   property "the lights are eventually turned on" do
+                     eventually(state.on?)
+                   end
+                 end
+               )
     end
 
-    test "with failed proposition" do
-      properties = [
-        {"the lights are eventually turned on",
-         prop do
-           eventually(state.on?)
-         end}
-      ]
-
+    test "with unsatisfied proposition" do
       assert_raise PropLTL.ViolatedProperty, ~r/lights are eventually turned on/, fn ->
-        run_simulation(OnOff, self(), [:off, :off], properties)
+        run_simulation(
+          OnOff,
+          self(),
+          [:off, :off],
+          properties do
+            property "the lights are eventually turned on" do
+              eventually(state.on?)
+            end
+          end
+        )
       end
     end
   end

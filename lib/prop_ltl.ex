@@ -1,6 +1,6 @@
 defmodule PropLTL do
-  import ExUnit.Assertions
   alias PropLTL.Proposition, as: Proposition
+  import PropLTL.Proposition
 
   defmodule ViolatedProperty do
     defexception message: "One or more LTL properties were violated",
@@ -18,6 +18,37 @@ defmodule PropLTL do
     end
   end
 
+  defmacro properties(do: props) do
+    compile_properties(props, __CALLER__)
+  end
+
+  def compile_properties({kind, _, [_name, [do: _proposition]]} = decl, caller)
+      when kind in [:property, :invariant] do
+    quote do: [unquote(compile_property(decl, caller))]
+  end
+
+  def compile_properties({:__block__, _, properties}, caller) do
+    properties = properties |> Enum.map(&compile_property(&1, caller))
+    quote do: [unquote_splicing(properties)]
+  end
+
+  defp compile_property({:property, _, [name, [do: proposition]]}, caller) do
+    compiled = compile_proposition(proposition, caller)
+    quote do: {unquote(name), unquote(compiled)}
+  end
+
+  defp compile_property({:invariant, _, [name, [do: proposition]]}, caller) do
+    compiled =
+      compile_proposition(
+        quote do
+          always(unquote(proposition))
+        end,
+        caller
+      )
+
+    quote do: {unquote(name), unquote(compiled)}
+  end
+
   def run_simulation(module, init_arg, events, properties) do
     {state, properties, trace_rev} =
       for event <- events, reduce: init_simulation(module, init_arg, properties) do
@@ -28,7 +59,7 @@ defmodule PropLTL do
 
           unless Enum.empty?(failed_properties) do
             raise ViolatedProperty,
-              trace: Enum.reverse(trace_rev),
+              trace: Enum.reverse([event | trace_rev]),
               state: state,
               properties: failed_properties
           end

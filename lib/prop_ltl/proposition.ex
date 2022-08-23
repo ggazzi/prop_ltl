@@ -315,99 +315,103 @@ defmodule PropLTL.Proposition do
 
   """
   defmacro prop(ast) do
-    translate_prop(ast, __CALLER__)
+    compile_proposition(ast, __CALLER__)
   end
 
-  @spec translate_prop(term, caller :: Macro.Env.t()) :: prop
-  defp translate_prop(true, _) do
+  @spec compile_proposition(term, caller :: Macro.Env.t()) :: prop
+  def compile_proposition(true, _) do
     true
   end
 
-  defp translate_prop(false, _) do
+  def compile_proposition(false, _) do
     false
   end
 
-  defp translate_prop([do: prop], caller) do
-    translate_prop(prop, caller)
+  def compile_proposition([do: prop], caller) do
+    compile_proposition(prop, caller)
   end
 
-  defp translate_prop({:__block__, _, [prop]}, caller) do
-    translate_prop(prop, caller)
+  def compile_proposition({:__block__, _, [prop]}, caller) do
+    compile_proposition(prop, caller)
   end
 
-  defp translate_prop({:not, _opts, [prop]}, caller) do
-    quote do: {:not, unquote(translate_prop(prop, caller))}
+  def compile_proposition({:not, _opts, [prop]}, caller) do
+    quote do: {:not, unquote(compile_proposition(prop, caller))}
   end
 
-  defp translate_prop({:and, _opts, [prop1, prop2]}, caller) do
+  def compile_proposition({:and, _opts, [prop1, prop2]}, caller) do
     quote do
-      {:and, unquote(translate_prop(prop1, caller)), unquote(translate_prop(prop2, caller))}
+      {:and, unquote(compile_proposition(prop1, caller)),
+       unquote(compile_proposition(prop2, caller))}
     end
   end
 
-  defp translate_prop({:or, _opts, [prop1, prop2]}, caller) do
+  def compile_proposition({:or, _opts, [prop1, prop2]}, caller) do
     quote do
-      {:or, unquote(translate_prop(prop1, caller)), unquote(translate_prop(prop2, caller))}
+      {:or, unquote(compile_proposition(prop1, caller)),
+       unquote(compile_proposition(prop2, caller))}
     end
   end
 
-  defp translate_prop({:if, _opts, [prop1, [do: prop2]]}, caller) do
+  def compile_proposition({:if, _opts, [prop1, [do: prop2]]}, caller) do
     quote do
-      {:implies, unquote(translate_prop(prop1, caller)), unquote(translate_prop(prop2, caller))}
+      {:implies, unquote(compile_proposition(prop1, caller)),
+       unquote(compile_proposition(prop2, caller))}
     end
   end
 
-  defp translate_prop({:next_weak, _opts, [prop]}, caller) do
-    quote do: {:next, :weak, unquote(translate_prop(prop, caller))}
+  def compile_proposition({:next_weak, _opts, [prop]}, caller) do
+    quote do: {:next, :weak, unquote(compile_proposition(prop, caller))}
   end
 
-  defp translate_prop({:next_strong, _opts, [prop]}, caller) do
-    quote do: {:next, :strong, unquote(translate_prop(prop, caller))}
+  def compile_proposition({:next_strong, _opts, [prop]}, caller) do
+    quote do: {:next, :strong, unquote(compile_proposition(prop, caller))}
   end
 
-  defp translate_prop({:always, _opts, [prop]}, caller) do
-    quote do: {:always, unquote(translate_prop(prop, caller))}
+  def compile_proposition({:always, _opts, [prop]}, caller) do
+    quote do: {:always, unquote(compile_proposition(prop, caller))}
   end
 
-  defp translate_prop({:eventually, _opts, [prop]}, caller) do
-    quote do: {:eventually, unquote(translate_prop(prop, caller))}
+  def compile_proposition({:eventually, _opts, [prop]}, caller) do
+    quote do: {:eventually, unquote(compile_proposition(prop, caller))}
   end
 
-  defp translate_prop({:until, _opts, [prop1, prop2]}, caller) do
+  def compile_proposition({:until, _opts, [prop1, prop2]}, caller) do
     quote do
-      {:until, unquote(translate_prop(prop1, caller)), unquote(translate_prop(prop2, caller))}
+      {:until, unquote(compile_proposition(prop1, caller)),
+       unquote(compile_proposition(prop2, caller))}
     end
   end
 
-  defp translate_prop({:weak_until, _opts, [prop1, prop2]}, caller) do
+  def compile_proposition({:weak_until, _opts, [prop1, prop2]}, caller) do
     quote do
-      {:weak_until, unquote(translate_prop(prop1, caller)),
-       unquote(translate_prop(prop2, caller))}
+      {:weak_until, unquote(compile_proposition(prop1, caller)),
+       unquote(compile_proposition(prop2, caller))}
     end
   end
 
-  defp translate_prop({:recv, _opts, [pattern]}, caller) do
+  def compile_proposition({:recv, _opts, [pattern]}, caller) do
     quote do: {:recv, unquote(make_recv_handler(pattern, 0, caller))}
   end
 
-  defp translate_prop({:let, _, [{:=, _, [{name, _, context}, expr]}]}, caller)
-       when is_atom(name) and is_atom(context) do
+  def compile_proposition({:let, _, [{:=, _, [{name, _, context}, expr]}]}, caller)
+      when is_atom(name) and is_atom(context) do
     quote do: {:let, unquote(name), unquote(make_atomic_handler(expr, caller))}
   end
 
-  defp translate_prop({:_, _, context} = wildcard, _caller) when is_atom(context) do
+  def compile_proposition({:_, _, context} = wildcard, _caller) when is_atom(context) do
     wildcard
   end
 
-  defp translate_prop({:^, _, _} = pin, _caller) do
+  def compile_proposition({:^, _, _} = pin, _caller) do
     pin
   end
 
-  defp translate_prop({:&, _, [pattern]}, _caller) do
+  def compile_proposition({:&, _, [pattern]}, _caller) do
     pattern
   end
 
-  defp translate_prop(expr, caller) do
+  def compile_proposition(expr, caller) do
     quote do: {:expr, unquote(make_atomic_handler(expr, caller))}
   end
 

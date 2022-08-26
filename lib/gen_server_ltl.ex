@@ -15,7 +15,24 @@ defmodule GenServerLTL do
     end
   end
 
+  defmodule ServerStopped do
+    defexception message: "The GenServer stopped unexpectedly",
+                 reason: nil,
+                 trace: nil,
+                 state: nil
+
+    @impl true
+    def message(exception) do
+      reason = inspect(exception.reason, pretty: true)
+      trace = inspect(exception.trace, pretty: true)
+      state = inspect(exception.state, pretty: true)
+
+      "#{exception.message}\n  reason: #{reason}\n  trace: #{trace}\n  state: #{state}"
+    end
+  end
+
   defmacro properties(do: props) do
+    # TODO: forbid the variable "state" from being captured by the environment
     compile_properties(props, __CALLER__)
   end
 
@@ -31,7 +48,7 @@ defmodule GenServerLTL do
 
   defp compile_property({:property, _, [name, [do: proposition]]}, caller) do
     compiled = QuickLTL.Syntax.compile_proposition(proposition, caller)
-    quote do: {unquote(name), unquote(compiled)}
+    quote do: {unquote(name), %QuickLTL{ast: unquote(compiled)}}
   end
 
   defp compile_property({:invariant, _, [name, [do: proposition]]}, caller) do
@@ -43,65 +60,129 @@ defmodule GenServerLTL do
         caller
       )
 
-    quote do: {unquote(name), unquote(compiled)}
+    quote do: {unquote(name), %QuickLTL{ast: unquote(compiled)}}
   end
 
-  def run_simulation(module, init_arg, events, properties) do
-    {state, properties, trace_rev} =
-      for event <- events, reduce: init_simulation(module, init_arg, properties) do
-        {state, properties, trace_rev} ->
-          {state, properties} = step_simulation(module, event, state, properties)
+  def run_execution(module, init_arg, events, properties) do
+    run_execution(events, init_execution(module, init_arg, properties))
+  end
 
-          failed_properties = for {description, false, env} <- properties, do: {description, env}
+  def run_execution([final_event], state) do
+    conclude_execution(final_event, state)
+  end
 
-          unless Enum.empty?(failed_properties) do
-            raise ViolatedProperty,
-              trace: Enum.reverse([event | trace_rev]),
-              state: state,
-              properties: failed_properties
-          end
+  def run_execution([event | future_events], state) do
+    run_execution(future_events, step_execution(event, state))
+  end
 
-          unsatisfied_properties = for {_, p, _} = item <- properties, p != true, do: item
+  def init_execution(module, init_arg, properties) do
+    {:ok, server_state} = module.init(init_arg)
 
-          {state, unsatisfied_properties, [event | trace_rev]}
-      end
+    initial_state = %{
+      server_module: module,
+      server_state: server_state,
+      expects_timeout?: false,
+      status: :running,
+      properties: Enum.map(properties, fn {descr, p} -> {descr, QuickLTL.simplify(p)} end),
+      trace_rev: []
+    }
 
-    unless Enum.empty?(properties) do
+    step_properties(initial_state, &QuickLTL.step/2)
+  end
+
+  def step_execution(event, state) do
+    step_properties(step_server(event, state), &QuickLTL.step/2)
+  end
+
+  def conclude_execution(final_event, state) do
+    final_state = step_properties(step_server(final_event, state), &QuickLTL.conclude/2)
+
+    unless Enum.empty?(final_state.properties) do
       raise ViolatedProperty,
         message: "One or more LTL properties could not be ensured",
-        trace: Enum.reverse(trace_rev),
-        state: state,
-        properties: for({description, _, _} <- properties, do: description)
+        trace: Enum.reverse(final_state.trace_rev),
+        state: final_state.server_state,
+        properties: for({description, _} <- final_state.properties, do: description)
     end
 
-    :ok
+    final_state
   end
 
-  def init_simulation(module, init_arg, properties) do
-    {:ok, state} = module.init(init_arg)
+  defp step_server(event, state) do
+    # TODO: expose a {:reply, reply} as a logical variable
+    # TODO: support {:continue, continue} as part of the response
+    new_state =
+      case process_event(event, state) do
+        {:reply, _reply, new_state} ->
+          %{state | server_state: new_state, expects_timeout?: false}
 
-    properties =
-      for {description, p} <- properties do
-        {description, step_property(state, QuickLTL.simplify(p))}
+        {:reply, _reply, new_state, atom} when atom in [:hibernate, :infinity] ->
+          %{state | server_state: new_state, expects_timeout?: false}
+
+        {:reply, _reply, new_state, :infinity} ->
+          %{state | server_state: new_state, expects_timeout?: false}
+
+        {:reply, _reply, new_state, timeout} when is_number(timeout) ->
+          %{state | server_state: new_state, expects_timeout?: true}
+
+        {:noreply, new_state} ->
+          %{state | server_state: new_state, expects_timeout?: false}
+
+        {:noreply, new_state, atom} when atom in [:hibernate, :infinity] ->
+          %{state | server_state: new_state, expects_timeout?: false}
+
+        {:noreply, new_state, timeout} when is_number(timeout) ->
+          %{state | server_state: new_state, expects_timeout?: true}
+
+        {:stop, reason, _reply, new_state} ->
+          %{state | server_state: new_state, expects_timeout?: true, status: {:stopped, reason}}
+
+        {:stop, reason, new_state} ->
+          %{state | server_state: new_state, expects_timeout?: true, status: {:stopped, reason}}
       end
 
-    {state, properties, []}
+    new_state = %{new_state | trace_rev: [event | state.trace_rev]}
+
+    case new_state.status do
+      :running ->
+        new_state
+
+      {:stopped, reason} ->
+        raise ServerStopped,
+          reason: reason,
+          state: new_state.server_state,
+          trace: Enum.reverse(new_state.trace_rev)
+    end
   end
 
-  def step_simulation(module, event, state, properties) do
-    # FIXME: support other kinds of events and other results
-    {:noreply, state} = module.handle_cast(event, state)
+  defp process_event(event, %{server_module: module, server_state: server_state}) do
+    case event do
+      {:call, payload} -> module.handle_call(payload, {self(), make_ref()}, server_state)
+      {:cast, payload} -> module.handle_cast(payload, server_state)
+      {:info, payload} -> module.handle_info(payload, server_state)
+    end
+  end
 
-    properties =
-      for {description, p} <- properties do
-        p = step_property(state, p)
-        {description, p}
+  defp step_properties(state, stepper) do
+    stepped_properties =
+      for {name, p} <- state.properties do
+        {name,
+         p
+         |> QuickLTL.unfold()
+         |> stepper.(%{state: state.server_state})
+         |> QuickLTL.simplify()}
       end
 
-    {state, properties}
-  end
+    {failed_properties, pending_properties} =
+      Enum.split_with(stepped_properties, fn {_, p} -> p.ast == false end)
 
-  defp step_property(state, property) do
-    property |> QuickLTL.unfold() |> QuickLTL.step(%{state: state}) |> QuickLTL.simplify()
+    unless Enum.empty?(failed_properties) do
+      raise ViolatedProperty,
+        trace: Enum.reverse(state.trace_rev),
+        state: state.server_state,
+        properties: failed_properties
+    end
+
+    %{state | properties: Enum.filter(pending_properties, fn {_, p} -> p.ast != true end)}
   end
 end

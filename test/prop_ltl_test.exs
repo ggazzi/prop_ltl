@@ -1,5 +1,6 @@
 defmodule PropLTLTest do
   use ExUnit.Case
+  import ExUnitProperties
   import PropLTL
   doctest PropLTL
 
@@ -78,15 +79,27 @@ defmodule PropLTLTest do
           end
         )
       end
+    end
 
-      run_simulation(
-        OnOff,
-        self(),
-        [:off, :toggle, :toggle],
-        properties do
-          invariant("the lights remain off forever", do: not state.on?)
-        end
-      )
+    test "with generated trace" do
+      # initial_size: 20
+      check all(
+              trace <- StreamData.list_of(StreamData.one_of([:on, :off, :toggle])),
+              length(trace) > 5,
+              initial_size: 20,
+              max_runs: 1000
+            ) do
+        run_simulation(
+          OnOff,
+          self(),
+          trace,
+          properties do
+            property "the lights are eventually turned on" do
+              eventually(state.on?)
+            end
+          end
+        )
+      end
     end
   end
 end

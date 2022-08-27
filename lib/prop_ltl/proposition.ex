@@ -163,6 +163,20 @@ defmodule PropLTL.Proposition do
 
   defp nonempty_postfixes(list), do: %NonemptyPostfixes{list: list}
 
+  @spec evaluate(prop, nonempty_list(state), env) :: prop()
+  @doc """
+  Evaluates the given proposition for the given state-trace.
+  """
+  def evaluate(p, trace, env \\ %{})
+
+  def evaluate(p, [], env) do
+    p |> unfold() |> conclude() |> simplify()
+  end
+
+  def evaluate(p, [state | future], env) do
+    p |> unfold() |> step(state) |> simplify() |> evaluate(future, env)
+  end
+
   @spec simplify(prop) :: prop
   @doc """
   Simplify a proposition using some common equivalences.
@@ -463,6 +477,80 @@ defmodule PropLTL.Proposition do
   def step({:implies, p, q}, state, env) do
     {:implies, step(p, state, env), step(q, state, env)}
   end
+
+  @spec conclude(prop) :: prop
+  @doc """
+  Evaluate the guarded proposition at the end of a trace.
+  Will essentially default the temporal operators to true or false depending on their semantics.
+
+  ## Examples
+
+  Boolean expressions will not be evaluated.
+
+      iex> p = prop do x < zero or x > zero end
+      iex> conclude(p)
+      p
+
+  Let-bindings will also not be evaluated.
+
+      iex> p = prop do
+      ...>   x > 0 and let orig: x, do:
+      ...>     orig == x and next_weak(x > orig)
+      ...> end
+      iex> match?(
+      ...>   prop do
+      ...>     (&{:expr, _}) and let orig: &{_, _}, do:
+      ...>       (&{:expr, _}) and true
+      ...>   end,
+      ...>   conclude(p))
+      true
+
+  The weak next, always and weak_until operators will always conclude as true.
+
+      iex> p = prop do false or next_weak(state.x == x + 1) end
+      iex> conclude(p)
+      prop do false or true end
+
+      iex> p = prop do false or always(state.x == x + 1) end
+      iex> conclude(p)
+      prop do false or true end
+
+      iex> p = prop do false or weak_until(state.x == x + 1, state.x == x) end
+      iex> conclude(p)
+      prop do false or true end
+
+  The strong next, eventually and until operators will always conclude as false.
+
+      iex> p = prop do false or next_strong(state.x == x + 1) end
+      iex> conclude(p)
+      prop do false or false end
+
+      iex> p = prop do false or eventually(state.x == x + 1) end
+      iex> conclude(p)
+      prop do false or false end
+
+      iex> p = prop do false or until(state.x == x + 1, state.x == x) end
+      iex> conclude(p)
+      prop do false or false end
+
+  """
+  def conclude({:next, :weak, _}), do: true
+  def conclude({:next, :strong, _}), do: false
+
+  def conclude({:always, _}), do: true
+  def conclude({:eventually, _}), do: false
+
+  def conclude({:until, _, _}), do: false
+  def conclude({:weak_until, _, _}), do: true
+
+  def conclude({:not, p}), do: {:not, conclude(p)}
+  def conclude({:and, p, q}), do: {:and, conclude(p), conclude(q)}
+  def conclude({:or, p, q}), do: {:or, conclude(p), conclude(q)}
+  def conclude({:implies, p, q}), do: {:implies, conclude(p), conclude(q)}
+
+  def conclude({:let, binders, p}), do: {:let, binders, conclude(p)}
+
+  def conclude(p), do: p
 
   @spec conclude(guarded_prop, state, env) :: prop
   @doc """

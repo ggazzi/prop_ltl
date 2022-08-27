@@ -20,6 +20,7 @@ defmodule PropLTL.Proposition do
   @type prop ::
           boolean()
           | atomic
+          | {:let, Keyword.t(binder), prop}
           | {:not, prop}
           | {:and, prop, prop}
           | {:or, prop, prop}
@@ -34,10 +35,13 @@ defmodule PropLTL.Proposition do
   An atomic proposition in a variant of linear temporal logic.
   """
   @type atomic ::
-          {:expr, (env -> boolean()), Macro.output()}
-          | {:let, atom, (env -> term), Macro.output()}
-  # TODO: add an atomic proposition for receiving messages
-  # | {:recv, (state -> state | false)}
+          {:expr, {(env -> boolean), Macro.output()}}
+
+  # TODO: add an atomic and binding proposition for receiving messages
+
+  @type binder :: {(env -> term), Macro.output()} | term()
+
+  @type evaluator(result) :: {(env -> result), Macro.output()}
 
   @typedoc """
   A guarded proposition in a variant of linear temporal logic.
@@ -50,6 +54,7 @@ defmodule PropLTL.Proposition do
   @type guarded_prop ::
           boolean()
           | atomic
+          | {:let, Keyword.t(evaluator(term)), prop}
           | {:not, guarded_prop}
           | {:and, guarded_prop, guarded_prop}
           | {:or, guarded_prop, guarded_prop}
@@ -59,8 +64,8 @@ defmodule PropLTL.Proposition do
   @typedoc """
   Logical environment under which a proposition can be evaluated.
 
-  Provides values for any logical variables, which can be determined
-  with the `atomic` proposition `(let x = value)`.
+  Provides values for any logical variables, which can be shadowed
+  by the proposition `let x: value do p end`.
   """
   @type env :: %{atom => term}
 
@@ -116,6 +121,7 @@ defmodule PropLTL.Proposition do
       ...>   p)
       true
   """
+
   def simplify({:and, p, q}) do
     case {simplify(p), simplify(q)} do
       {true, q} -> q
@@ -223,26 +229,22 @@ defmodule PropLTL.Proposition do
 
   Rewrites temporal operators to ensure that the outermost such operator is always `next`.
 
-      iex> match?(
-      ...>   prop do (&e1) or next_strong(eventually(&{:expr, _, _} = e2)) end when e1 == e2,
-      ...>   unfold(prop do eventually(state.x > 0) end)
-      ...> )
-      true
-
-      iex> match?(
-      ...>   prop do (&e1) or next_strong(eventually(&{:let, :x, _, _} = e2)) end when e1 == e2,
-      ...>   unfold(prop do eventually(let x = state.x) end)
-      ...> )
-      true
-
-  Rewrites only the outermost temporal operators, even if they are nested inside
-  propositional operators.
-
       iex> unfold prop always(if false, do: eventually(true))
       prop do
         ( if false, do: true or next_strong(eventually(true)) )
         and next_weak(always(if false, do: eventually true))
       end
+
+      iex> match?(
+      ...>   prop do (&e1) or next_strong(eventually(&{:expr, _} = e2)) end when e1 == e2,
+      ...>   unfold(prop do eventually(state.x > 0) end)
+      ...> )
+      true
+
+      Rewrites only the outermost temporal operators, even if they are nested inside
+      propositional operators.
+
+      TODO: more tests
 
   """
   def unfold({:next, _, _} = p), do: p
@@ -259,15 +261,15 @@ defmodule PropLTL.Proposition do
 
   def unfold(true), do: true
   def unfold(false), do: false
-  def unfold({:expr, _, _} = p), do: p
-  def unfold({:let, _, _, _} = p), do: p
+  def unfold({:expr, _} = p), do: p
+  def unfold({:let, binders, p}), do: {:let, binders, unfold(p)}
 
   def unfold({:not, p}), do: {:not, unfold(p)}
   def unfold({:and, p, q}), do: {:and, unfold(p), unfold(q)}
   def unfold({:or, p, q}), do: {:or, unfold(p), unfold(q)}
   def unfold({:implies, p, q}), do: {:implies, unfold(p), unfold(q)}
 
-  @spec step(guarded_prop, env) :: {guarded_prop, env}
+  @spec step(guarded_prop(), env()) :: prop()
   @doc """
   Evaluate the guarded proposition at the current state.
 
@@ -282,110 +284,91 @@ defmodule PropLTL.Proposition do
   Unguarded boolean expressions will be evaluated at the current environment.
 
       iex> p = prop do (x < 0 or x > 0) and next_weak(x == 0) end
-      iex> {q, _env} = step(p, %{x: 1})
       iex> match?(
-      ...>   prop do (false or true) and &{:expr, _, _} end,
+      ...>   prop do (false or true) and &{:expr, _} end,
+      ...>   step(p, %{x: 1})
+      ...> )
+      true
+
+  We can use `let` to bind variables for future use.
+
+      iex> p = prop do
+      ...>   x > 0 and let orig: x do
+      ...>     orig == x and next_weak(x > orig)
+      ...>   end
+      ...> end
+      iex> q = step(p, %{x: 1})
+      iex> match?(
+      ...>   prop do
+      ...>     true and let orig: (&1) do
+      ...>       true and x > orig
+      ...>     end
+      ...>   end,
+      ...>   q)
+      iex> step(q, %{x: 2})
+      prop do true and let orig: &1, do: true and true end
+
+  Note that let bindings can shadow outer bindings.
+
+      iex> p = prop do
+      ...>   let x: x + 1, do: x == 1
+      ...> end
+      iex> step(p, %{x: 0})
+      prop do let x: (&1), do: true end
+
+  The outermost next operators will be removed, but *only* the outermost.
+
+      iex> p = prop do
+      ...>   let orig: x, do: next_strong(x > orig or next_weak(x > orig))
+      ...> end
+      iex> q = step(p, %{x: 1})
+      iex> match?(
+      ...>   prop do let orig: &1, do: (&{:expr, _}) or next_weak(_) end,
       ...>   q)
       true
-
-  A common pattern is using let-and to bind variables for future use.
-
-      iex> p = prop do (let x = 1) and x == 1 end
-      iex> {q, env} = step(p, %{})
-      iex> env
-      %{x: 1}
-      iex> q
-      prop do true and true end
-
-  Here the syntactical order is important, since it will determine
-  the execution order of the assignments.
-
-      iex> p = prop (x == 1) and (let x = 1)
-      iex> {q, env} = step(p, %{})
-      iex> env
-      %{x: 1}
-      iex> q
-      prop false and true
-
-  Note also that if-let will not always work as intended!
-  If the variable was already bound, the implication will always evaluate to true!
-
-      iex> p = prop do (let x = 1) and if (let x = 2), do: next_weak(x == 3) end
-      iex> {q, env} = step(p, %{})
-      iex> env
-      %{x: 1}
+      iex> r = step(q, %{x: 0})
       iex> match?(
-      ...>    prop do true and if false, do: &{:expr, _, _} end,
-      ...>    q)
-      true
-
-  The next operators will be simply removed.
-
-      iex> p = prop do (let x = state.x) and next_weak(state.x == x) end
-      iex> {q, env} = step(p, %{state: %{x: 1}})
-      iex> match?(
-      ...>   prop do true and &{:expr, _, _} end,
+      ...>   prop do let orig: &1, do: false or &{:expr, _} end,
       ...>   q)
-      true
-      iex> {r, env} = step(q, env)
-      iex> r
-      prop do true and true end
-
-      iex> p = prop do (let x = state.x) and next_strong(state.x == x + 1) end
-      iex> {q, env} = step(p, %{state: %{x: 1}})
-      iex> match?(
-      ...>   prop do true and &{:expr, _, _} end,
-      ...>   q)
-      true
-      iex> {r, env} = step(q, env)
-      iex> r
-      prop do true and false end
+      iex> step(r, %{x: 2})
+      prop do let orig: (&1), do: false or true end
 
   """
-  def step(true, env), do: {true, env}
-  def step(false, env), do: {false, env}
+  def step(true, _env), do: true
+  def step(false, _env), do: false
 
-  def step({:next, _, p}, env), do: {p, env}
+  def step({:next, _, p}, _env), do: p
 
-  def step({:expr, eval, _src}, env) do
-    {if eval.(env) do
-       true
-     else
-       false
-     end, env}
+  def step({:expr, {eval, _src}}, env) do
+    if eval.(env) do
+      true
+    else
+      false
+    end
   end
 
-  def step({:let, var, eval, _src}, env) do
-    Map.get_and_update(env, var, fn
-      nil -> {true, eval.(env)}
-      val -> {false, val}
-    end)
+  def step({:let, binders, p}, env) do
+    {binders, env} = eval_binders(binders, env)
+    {:let, binders, step(p, env)}
   end
 
   def step({:not, p}, env) do
-    {p, env} = step(p, env)
-    {{:not, p}, env}
+    {:not, step(p, env)}
   end
 
   def step({:and, p, q}, env) do
-    {p, env} = step(p, env)
-    {q, env} = step(q, env)
-    {{:and, p, q}, env}
+    {:and, step(p, env), step(q, env)}
   end
 
   def step({:or, p, q}, env) do
-    {p, env} = step(p, env)
-    {q, env} = step(q, env)
-    {{:or, p, q}, env}
+    {:or, step(p, env), step(q, env)}
   end
 
   def step({:implies, p, q}, env) do
-    {p, env} = step(p, env)
-    {q, env} = step(q, env)
-    {{:implies, p, q}, env}
+    {:implies, step(p, env), step(q, env)}
   end
 
-  @spec conclude(guarded_prop, env) :: {guarded_prop, env}
+  @spec conclude(guarded_prop, env) :: prop
   @doc """
   Evaluate the guarded proposition at the end of a trace.
 
@@ -398,94 +381,76 @@ defmodule PropLTL.Proposition do
   Unguarded boolean expressions will be evaluated at the current environment.
 
       iex> p = prop do x < 0 or x > 0 end
-      iex> {q, _env} = conclude(p, %{x: 1})
-      iex> q
+      iex> conclude(p, %{x: 1})
       prop do false or true end
 
-  A common pattern is using let-and to bind variables for future use.
+  Let-bindings will also be resolved for the current state.
 
-      iex> p = prop do (let x = 1) and x == 1 end
-      iex> {q, env} = conclude(p, %{})
-      iex> env
-      %{x: 1}
-      iex> q
-      prop do true and true end
-
-  Here the syntactical order is important, since it will determine
-  the execution order of the assignments.
-
-      iex> p = prop do x == 1 and (let x = 1) end
-      iex> {q, env} = conclude(p, %{})
-      iex> env
-      %{x: 1}
-      iex> q
-      prop do false and true end
-
-  Note also that if-let will not always work as intended!
-  If the variable was already bound, the implication will always evaluate to true!
-
-      iex> p = prop do (let x = 1) and if (let x = 2), do: next_strong(x == 3) end
-      iex> {q, env} = conclude(p, %{})
-      iex> env
-      %{x: 1}
-      iex> q
-      prop do true and if false, do: false end
+      iex> p = prop do
+      ...>   x > 0 and let orig: x, do:
+      ...>     orig == x and next_weak(x > orig)
+      ...> end
+      iex> conclude(p, %{x: 1})
+      prop do true and let orig: &1, do:
+        true and true
+      end
 
   The weak next operator will always conclude as true.
 
-      # iex> p = prop do (let x = state.x) and next_weak(state.x == x + 1) end
-      # iex> {q, env} = conclude(p, %{state: %{x: 1}})
-      # iex> env
-      # %{state: %{x: 1}, x: 1}
-      # iex> q
-      # prop do if true and true end
+      iex> p = prop do let x: state.x, do: next_weak(state.x == x + 1) end
+      iex> conclude(p, %{state: %{x: 1}})
+      prop do let x: (&1), do: true end
 
   The strong next operator will always conclude as false.
 
-      iex> p = prop do (let x = state.x) and next_strong(state.x == x + 1) end
-      iex> {q, env} = conclude(p, %{state: %{x: 1}})
-      iex> env
-      %{state: %{x: 1}, x: 1}
-      iex> q
-      prop do true and false end
+      iex> p = prop do let x: state.x, do: next_strong(state.x == x + 1) end
+      iex> conclude(p, %{state: %{x: 1}})
+      prop do let x: (&1), do: false end
 
   """
-  def conclude(true, env), do: {true, env}
-  def conclude(false, env), do: {false, env}
+  def conclude(true, _env), do: true
+  def conclude(false, _env), do: false
 
-  def conclude({:next, :weak, _}, env), do: {true, env}
-  def conclude({:next, :strong, _}, env), do: {false, env}
+  def conclude({:next, :weak, _}, _env), do: true
+  def conclude({:next, :strong, _}, _env), do: false
 
-  def conclude({:expr, eval, _ast}, env), do: {eval.(env), env}
+  def conclude({:expr, {eval, _src}}, env), do: eval.(env)
 
-  def conclude({:let, var, eval, _src}, env) do
-    Map.get_and_update(env, var, fn
-      nil -> {true, eval.(env)}
-      val -> {false, val}
-    end)
+  def conclude({:let, binders, p}, env) do
+    {binders, env} = eval_binders(binders, env)
+    {:let, binders, conclude(p, env)}
   end
 
   def conclude({:not, p}, env) do
-    {p, env} = conclude(p, env)
-    {{:not, p}, env}
+    {:not, conclude(p, env)}
   end
 
   def conclude({:and, p, q}, env) do
-    {p, env} = conclude(p, env)
-    {q, env} = conclude(q, env)
-    {{:and, p, q}, env}
+    {:and, conclude(p, env), conclude(q, env)}
   end
 
   def conclude({:or, p, q}, env) do
-    {p, env} = conclude(p, env)
-    {q, env} = conclude(q, env)
-    {{:or, p, q}, env}
+    {:or, conclude(p, env), conclude(q, env)}
   end
 
   def conclude({:implies, p, q}, env) do
-    {p, env} = conclude(p, env)
-    {q, env} = conclude(q, env)
-    {{:implies, p, q}, env}
+    {:implies, conclude(p, env), conclude(q, env)}
+  end
+
+  @spec eval_binders(list(binder), env) :: {list(binder), env}
+  defp eval_binders(binders, env) do
+    eval_binders(binders, env, [])
+  end
+
+  defp eval_binders([], env, acc), do: {Enum.reverse(acc), env}
+
+  defp eval_binders([{name, {eval, _src}} | binders], env, acc) do
+    value = eval.(env)
+    eval_binders(binders, Map.put(env, name, value), [{name, value} | acc])
+  end
+
+  defp eval_binders([{name, value} | binders], env, acc) do
+    eval_binders(binders, Map.put(env, name, value), [{name, value} | acc])
   end
 
   @doc """
@@ -505,7 +470,7 @@ defmodule PropLTL.Proposition do
 
       iex> p = prop always not state.x == 2
       iex> match?(
-      ...>   {:always, {:expr, fn1, _}}
+      ...>   {:always, {:expr, {fn1, _}}}
       ...>     when is_function(fn1),
       ...>   p
       ...> )
@@ -513,7 +478,7 @@ defmodule PropLTL.Proposition do
 
       iex> p = prop always not (state.x == 2)
       iex> match?(
-      ...>   {:always, {:not, {:expr, fn1, _}}}
+      ...>   {:always, {:not, {:expr, {fn1, _}}}}
       ...>     when is_function(fn1),
       ...>   p
       ...> )
@@ -521,16 +486,15 @@ defmodule PropLTL.Proposition do
 
       iex> p = prop do
       ...>   always do
-      ...>     if (let orig = state.x), do: until(state.x > orig, state.x == orig)
+      ...>     let orig: state.x, do: until(state.x > orig, state.x == orig)
       ...>   end
       ...> end
       iex> match?(
       ...>   {:always,
-      ...>     {:implies,
-      ...>       {:let, :orig, fn1, _},
+      ...>     {:let, [{:orig, {fn1, _}}],
       ...>       {:until,
-      ...>         {:expr, fn2, _},
-      ...>         {:expr, fn3, _}
+      ...>         {:expr, {fn2, _}},
+      ...>         {:expr, {fn3, _}}
       ...>       }
       ...>     }
       ...>   } when is_function(fn1) and is_function(fn2) and is_function(fn3),
@@ -550,12 +514,21 @@ defmodule PropLTL.Proposition do
       iex> prop do (&{:not, prop do true and false end}) or false end
       prop not (true and false) or false
 
+      iex> prop do let x: (&1), do: true end
+      {:let, [x: 1], true}
+
       iex> match?(
-      ...>   prop do always (&{:expr, _, _}) and true end,
+      ...>   prop do always (&{:expr, _}) and true end,
       ...>   prop do always (x == 2) and true end
       ...> )
       true
 
+      iex> x = :foo
+      iex> match?(
+      ...>   prop do let x: ^x, do: true end,
+      ...>   prop do let x: (&:foo), do: true end
+      ...> )
+      true
   """
   defmacro prop(arg) do
     compile_proposition(arg, __CALLER__)
@@ -653,15 +626,41 @@ defmodule PropLTL.Proposition do
   def compile_proposition({:let, _, [{:=, _, [{name, _, context}, expr]}]}, macro_env)
       when is_atom(name) and is_atom(context) do
     quote do
-      {:let, unquote(name), unquote_splicing(compile_atomic_evaluator(expr, macro_env))}
+      # TODO: remove
+      {:let, unquote(compile_binders([{name, expr}], macro_env)), :illegal}
     end
   end
 
-  def compile_proposition(expr, macro_env) do
-    quote do: {:expr, unquote_splicing(compile_atomic_evaluator(expr, macro_env))}
+  def compile_proposition({:let, _, [binders, [do: expr]]}, macro_env) do
+    quote do
+      {:let, unquote(compile_binders(binders, macro_env)),
+       unquote(compile_proposition(expr, macro_env))}
+    end
   end
 
-  @spec compile_atomic_evaluator(Macro.input(), Macro.Env.t()) :: list(Macro.output())
+  def compile_proposition({:let, meta, [args]}, macro_env) do
+    {expr, binders} = Keyword.pop(args, :do)
+    compile_proposition({:let, meta, [binders, [do: expr]]}, macro_env)
+  end
+
+  def compile_proposition(expr, macro_env) do
+    quote do: {:expr, unquote(compile_atomic_evaluator(expr, macro_env))}
+  end
+
+  def compile_binders(binders, macro_env) do
+    for {name, expr} <- binders do
+      binder =
+        case expr do
+          {:&, _, [raw_expr]} -> raw_expr
+          {:^, _, [_]} = pin -> pin
+          _ -> compile_atomic_evaluator(expr, macro_env)
+        end
+
+      quote do: {unquote(name), unquote(binder)}
+    end
+  end
+
+  @spec compile_atomic_evaluator(Macro.input(), Macro.Env.t()) :: Macro.output()
   @doc """
   Produce an evaluator for an Elixir expression used as part of a proposition.
 
@@ -669,7 +668,7 @@ defmodule PropLTL.Proposition do
   on top of the usual Elixir variable scope.  That is, any free variables
   of the expression should be looked up at evaluation time.
   """
-  def compile_atomic_evaluator(expr, macro_env) do
+  defp compile_atomic_evaluator(expr, macro_env) do
     expr = Macro.expand(expr, macro_env)
 
     evaluator =
@@ -698,7 +697,7 @@ defmodule PropLTL.Proposition do
         quote do: fn unquote(env_var) -> unquote(body) end
       end
 
-    [evaluator, Macro.escape(expr)]
+    quote do: {unquote(evaluator), unquote(Macro.escape(expr))}
   end
 
   defp var_context({name, meta, context}) do

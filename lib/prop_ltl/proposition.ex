@@ -35,13 +35,11 @@ defmodule PropLTL.Proposition do
   An atomic proposition in a variant of linear temporal logic.
   """
   @type atomic ::
-          {:expr, {(env -> boolean), Macro.output()}}
+          {:expr, {(state, env -> boolean), Macro.output()}}
 
   # TODO: add an atomic and binding proposition for receiving messages
 
-  @type binder :: {(env -> term), Macro.output()} | term()
-
-  @type evaluator(result) :: {(env -> result), Macro.output()}
+  @type binder :: {(state, env -> term), Macro.output()} | term()
 
   @typedoc """
   A guarded proposition in a variant of linear temporal logic.
@@ -54,7 +52,7 @@ defmodule PropLTL.Proposition do
   @type guarded_prop ::
           boolean()
           | atomic
-          | {:let, Keyword.t(evaluator(term)), prop}
+          | {:let, Keyword.t(binder), guarded_prop}
           | {:not, guarded_prop}
           | {:and, guarded_prop, guarded_prop}
           | {:or, guarded_prop, guarded_prop}
@@ -68,6 +66,8 @@ defmodule PropLTL.Proposition do
   by the proposition `let x: value do p end`.
   """
   @type env :: %{atom => term}
+
+  @type state :: env
 
   @spec simplify(prop) :: prop
   @doc """
@@ -269,9 +269,9 @@ defmodule PropLTL.Proposition do
   def unfold({:or, p, q}), do: {:or, unfold(p), unfold(q)}
   def unfold({:implies, p, q}), do: {:implies, unfold(p), unfold(q)}
 
-  @spec step(guarded_prop(), env()) :: prop()
+  @spec step(guarded_prop(), state(), env()) :: prop()
   @doc """
-  Evaluate the guarded proposition at the current state.
+  Evaluate the guarded proposition at the current state and environment.
 
   Any atomic propositions that are outside temporal operators will be evaluated
   at the given logical `t:env/0`.
@@ -281,12 +281,12 @@ defmodule PropLTL.Proposition do
 
   ## Examples
 
-  Unguarded boolean expressions will be evaluated at the current environment.
+  Unguarded boolean expressions will be evaluated at the current state.
 
-      iex> p = prop do (x < 0 or x > 0) and next_weak(x == 0) end
+      iex> p = prop do (x < zero or x > zero) and next_weak(x == 0) end
       iex> match?(
       ...>   prop do (false or true) and &{:expr, _} end,
-      ...>   step(p, %{x: 1})
+      ...>   step(p, %{x: 1}, %{zero: 0})
       ...> )
       true
 
@@ -334,41 +334,43 @@ defmodule PropLTL.Proposition do
       prop do let orig: (&1), do: false or true end
 
   """
-  def step(true, _env), do: true
-  def step(false, _env), do: false
+  def step(p, state \\ %{}, env)
 
-  def step({:next, _, p}, _env), do: p
+  def step(true, _state, _env), do: true
+  def step(false, _state, _env), do: false
 
-  def step({:expr, {eval, _src}}, env) do
-    if eval.(env) do
+  def step({:next, _, p}, _state, _env), do: p
+
+  def step({:expr, {eval, _src}}, state, env) do
+    if eval.(state, env) do
       true
     else
       false
     end
   end
 
-  def step({:let, binders, p}, env) do
-    {binders, env} = eval_binders(binders, env)
-    {:let, binders, step(p, env)}
+  def step({:let, binders, p}, state, env) do
+    {binders, env} = eval_binders(binders, state, env)
+    {:let, binders, step(p, state, env)}
   end
 
-  def step({:not, p}, env) do
-    {:not, step(p, env)}
+  def step({:not, p}, state, env) do
+    {:not, step(p, state, env)}
   end
 
-  def step({:and, p, q}, env) do
-    {:and, step(p, env), step(q, env)}
+  def step({:and, p, q}, state, env) do
+    {:and, step(p, state, env), step(q, state, env)}
   end
 
-  def step({:or, p, q}, env) do
-    {:or, step(p, env), step(q, env)}
+  def step({:or, p, q}, state, env) do
+    {:or, step(p, state, env), step(q, state, env)}
   end
 
-  def step({:implies, p, q}, env) do
-    {:implies, step(p, env), step(q, env)}
+  def step({:implies, p, q}, state, env) do
+    {:implies, step(p, state, env), step(q, state, env)}
   end
 
-  @spec conclude(guarded_prop, env) :: prop
+  @spec conclude(guarded_prop, state, env) :: prop
   @doc """
   Evaluate the guarded proposition at the end of a trace.
 
@@ -378,10 +380,10 @@ defmodule PropLTL.Proposition do
 
   ## Examples
 
-  Unguarded boolean expressions will be evaluated at the current environment.
+  Unguarded boolean expressions will be evaluated at the current state and environment.
 
-      iex> p = prop do x < 0 or x > 0 end
-      iex> conclude(p, %{x: 1})
+      iex> p = prop do x < zero or x > zero end
+      iex> conclude(p, %{x: 1}, %{zero: 0})
       prop do false or true end
 
   Let-bindings will also be resolved for the current state.
@@ -408,49 +410,55 @@ defmodule PropLTL.Proposition do
       prop do let x: (&1), do: false end
 
   """
-  def conclude(true, _env), do: true
-  def conclude(false, _env), do: false
+  def conclude(p, state \\ %{}, env)
 
-  def conclude({:next, :weak, _}, _env), do: true
-  def conclude({:next, :strong, _}, _env), do: false
+  def conclude(true, _state, _env), do: true
+  def conclude(false, _state, _env), do: false
 
-  def conclude({:expr, {eval, _src}}, env), do: eval.(env)
+  def conclude({:next, :weak, _}, _state, _env), do: true
+  def conclude({:next, :strong, _}, _state, _env), do: false
 
-  def conclude({:let, binders, p}, env) do
-    {binders, env} = eval_binders(binders, env)
+  def conclude({:expr, {eval, _src}}, state, env), do: eval.(state, env)
+
+  def conclude({:let, binders, p}, state, env) do
+    {binders, env} = eval_binders(binders, state, env)
     {:let, binders, conclude(p, env)}
   end
 
-  def conclude({:not, p}, env) do
-    {:not, conclude(p, env)}
+  def conclude({:not, p}, state, env) do
+    {:not, conclude(p, state, env)}
   end
 
-  def conclude({:and, p, q}, env) do
-    {:and, conclude(p, env), conclude(q, env)}
+  def conclude({:and, p, q}, state, env) do
+    {:and, conclude(p, state, env), conclude(q, state, env)}
   end
 
-  def conclude({:or, p, q}, env) do
-    {:or, conclude(p, env), conclude(q, env)}
+  def conclude({:or, p, q}, state, env) do
+    {:or, conclude(p, state, env), conclude(q, state, env)}
   end
 
-  def conclude({:implies, p, q}, env) do
-    {:implies, conclude(p, env), conclude(q, env)}
+  def conclude({:implies, p, q}, state, env) do
+    {:implies, conclude(p, state, env), conclude(q, state, env)}
   end
 
-  @spec eval_binders(list(binder), env) :: {list(binder), env}
-  defp eval_binders(binders, env) do
-    eval_binders(binders, env, [])
+  @spec eval_binders(list(binder), state, env) :: {list(binder), env}
+  defp eval_binders(binders, state, outer_env) do
+    {new_binders_rev, inner_env} =
+      for binder <- binders, reduce: {[], outer_env} do
+        {acc, env} ->
+          {name, value} = eval_binder(binder, state, env)
+          {[{name, value} | acc], Map.put(env, name, value)}
+      end
+
+    {Enum.reverse(new_binders_rev), inner_env}
   end
 
-  defp eval_binders([], env, acc), do: {Enum.reverse(acc), env}
-
-  defp eval_binders([{name, {eval, _src}} | binders], env, acc) do
-    value = eval.(env)
-    eval_binders(binders, Map.put(env, name, value), [{name, value} | acc])
+  defp eval_binder({name, {eval, _src}}, state, env) do
+    {name, eval.(state, env)}
   end
 
-  defp eval_binders([{name, value} | binders], env, acc) do
-    eval_binders(binders, Map.put(env, name, value), [{name, value} | acc])
+  defp eval_binder({name, value}, _state, _env) do
+    {name, value}
   end
 
   @doc """
@@ -675,29 +683,48 @@ defmodule PropLTL.Proposition do
       if macro_env.context == :match do
         quote do: _
       else
-        vars = Macro.Env.vars(macro_env)
+        outer_vars = Macro.Env.vars(macro_env)
+        state_var = Macro.unique_var(:state, __MODULE__)
         env_var = Macro.unique_var(:env, __MODULE__)
 
-        body =
-          Macro.prewalk(expr, fn
-            ^env_var ->
-              env_var
+        lookups =
+          for {name, _, _} = var <- collect_vars(expr),
+              var_context(var) not in outer_vars do
+            quote do
+              unquote(var) =
+                Map.get_lazy(unquote(env_var), unquote(name), fn ->
+                  Map.get(unquote(state_var), unquote(name))
+                end)
+            end
+          end
 
-            {name, _, context} = var when is_atom(name) and is_atom(context) ->
-              if var_context(var) in vars do
-                var
-              else
-                quote do: Map.get(unquote(env_var), unquote(name))
-              end
-
-            other ->
-              other
-          end)
-
-        quote do: fn unquote(env_var) -> unquote(body) end
+        quote do
+          fn unquote(state_var), unquote(env_var) ->
+            unquote_splicing(lookups)
+            unquote(expr)
+          end
+        end
       end
 
     quote do: {unquote(evaluator), unquote(Macro.escape(expr))}
+  end
+
+  @spec collect_vars(Macro.output()) :: MapSet.t()
+  def collect_vars(ast) do
+    Macro.prewalk(ast, MapSet.new(), fn
+      {skip, _, [_]}, acc when skip in [:^, :@] ->
+        {:ok, acc}
+
+      {:_, _, context}, acc when is_atom(context) ->
+        {:ok, acc}
+
+      {name, _, context} = var, acc when is_atom(name) and is_atom(context) ->
+        {:ok, MapSet.put(acc, var)}
+
+      node, acc ->
+        {node, acc}
+    end)
+    |> elem(1)
   end
 
   defp var_context({name, meta, context}) do

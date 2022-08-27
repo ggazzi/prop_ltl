@@ -69,6 +69,100 @@ defmodule PropLTL.Proposition do
 
   @type state :: env
 
+  @spec evaluate_naive(prop, nonempty_list(state), env) :: boolean()
+  @doc """
+  Evaluates the given proposition for the given state-trace.
+
+  This is an inefficient implementation for long traces, as it will
+  traverse the given tracae multiple times.  It is mostly useful as a reference
+  implementation.
+  """
+  def evaluate_naive(p, trace, env \\ %{})
+
+  @spec evaluate_naive(prop, nonempty_list(state :: env), env) :: boolean
+  def evaluate_naive(true, _, _), do: true
+  def evaluate_naive(false, _, _), do: false
+
+  def evaluate_naive({:expr, {eval, _src}}, [state | _], env) do
+    # Make sure we have a boolean reflecting the truthiness of the result
+    if eval.(state, env), do: true, else: false
+  end
+
+  def evaluate_naive({:let, binders, p}, [state | _] = trace, outer_env) do
+    {_, inner_env} = eval_binders(binders, state, outer_env)
+    evaluate_naive(p, trace, inner_env)
+  end
+
+  def evaluate_naive({:not, p}, trace, env), do: not evaluate_naive(p, trace, env)
+
+  def evaluate_naive({:and, p1, p2}, trace, env) do
+    if evaluate_naive(p1, trace, env), do: evaluate_naive(p2, trace, env), else: false
+  end
+
+  def evaluate_naive({:or, p1, p2}, trace, env) do
+    if evaluate_naive(p1, trace, env), do: true, else: evaluate_naive(p2, trace, env)
+  end
+
+  def evaluate_naive({:implies, p1, p2}, trace, env) do
+    if evaluate_naive(p1, trace, env), do: evaluate_naive(p2, trace, env), else: true
+  end
+
+  def evaluate_naive({:next, kind, _p}, [_state], _env) do
+    case kind do
+      :weak -> true
+      :strong -> false
+    end
+  end
+
+  def evaluate_naive({:next, _kind, p}, [_state | trace_rest], env) do
+    evaluate_naive(p, trace_rest, env)
+  end
+
+  def evaluate_naive({:always, p}, trace, env) do
+    nonempty_postfixes(trace) |> Enum.all?(&evaluate_naive(p, &1, env))
+  end
+
+  def evaluate_naive({:eventually, p}, trace, env) do
+    nonempty_postfixes(trace) |> Enum.any?(&evaluate_naive(p, &1, env))
+  end
+
+  def evaluate_naive({:until, goal, meanwhile}, trace, env) do
+    {before_goal, after_goal} =
+      nonempty_postfixes(trace)
+      |> Enum.split_while(fn subtrace -> not evaluate_naive(goal, subtrace, env) end)
+
+    if after_goal == [] do
+      false
+    else
+      Enum.all?(before_goal, fn subtrace -> evaluate_naive(meanwhile, subtrace, env) end)
+    end
+  end
+
+  def evaluate_naive({:weak_until, goal, meanwhile}, trace, env) do
+    nonempty_postfixes(trace)
+    |> Stream.take_while(&(not evaluate_naive(goal, &1, env)))
+    |> Enum.all?(&evaluate_naive(meanwhile, &1, env))
+  end
+
+  defmodule NonemptyPostfixes do
+    defstruct list: []
+
+    defimpl Enumerable do
+      def count(%{list: list}), do: {:ok, length(list)}
+      def member?(_, _), do: {:error, __MODULE__}
+      def slice(_), do: {:error, __MODULE__}
+
+      def reduce(_state, {:halt, acc}, _fun), do: {:halted, acc}
+      def reduce(state, {:suspend, acc}, fun), do: {:suspended, acc, &reduce(state, &1, fun)}
+      def reduce(%{list: []}, {:cont, acc}, _fun), do: {:done, acc}
+
+      def reduce(%{list: [_ | tail] = list}, {:cont, acc}, fun),
+        do: reduce(tail, fun.(list, acc), fun)
+    end
+  end
+
+  defp nonempty_postfixes(list), do: %NonemptyPostfixes{list: list}
+
   @spec simplify(prop) :: prop
   @doc """
   Simplify a proposition using some common equivalences.

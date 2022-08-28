@@ -1,7 +1,4 @@
-defmodule PropLTL do
-  alias PropLTL.Proposition, as: Proposition
-  import PropLTL.Proposition
-
+defmodule GenServerLTL do
   defmodule ViolatedProperty do
     defexception message: "One or more LTL properties were violated",
                  trace: nil,
@@ -33,13 +30,13 @@ defmodule PropLTL do
   end
 
   defp compile_property({:property, _, [name, [do: proposition]]}, caller) do
-    compiled = compile_proposition(proposition, caller)
+    compiled = QuickLTL.compile_proposition(proposition, caller)
     quote do: {unquote(name), unquote(compiled)}
   end
 
   defp compile_property({:invariant, _, [name, [do: proposition]]}, caller) do
     compiled =
-      compile_proposition(
+      QuickLTL.compile_proposition(
         quote do
           always(unquote(proposition))
         end,
@@ -85,8 +82,7 @@ defmodule PropLTL do
 
     properties =
       for {description, p} <- properties do
-        {p, env} = step_property(state, Proposition.simplify(p), %{state: state})
-        {description, p, env}
+        {description, step_property(state, QuickLTL.simplify(p))}
       end
 
     {state, properties, []}
@@ -97,17 +93,15 @@ defmodule PropLTL do
     {:noreply, state} = module.handle_cast(event, state)
 
     properties =
-      for {description, p, env} <- properties do
-        {p, env} = step_property(state, p, %{env | state: state})
-        {description, p, env}
+      for {description, p} <- properties do
+        p = step_property(state, p)
+        {description, p}
       end
 
     {state, properties}
   end
 
-  defp step_property(state, property, env) do
-    {property, env} = Proposition.step(Proposition.unfold(property), %{env | state: state})
-    property = Proposition.simplify(property)
-    {property, env}
+  defp step_property(state, property) do
+    property |> QuickLTL.unfold() |> QuickLTL.step(%{state: state}) |> QuickLTL.simplify()
   end
 end

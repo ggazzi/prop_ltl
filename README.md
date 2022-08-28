@@ -1,4 +1,4 @@
-# PropLtl
+# QuickLTL
 
 **TODO: Add description**
 

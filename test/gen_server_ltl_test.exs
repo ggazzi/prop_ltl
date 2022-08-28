@@ -1,8 +1,11 @@
-defmodule PropLTLTest do
+defmodule GenServerLTLTest do
   use ExUnit.Case
   import ExUnitProperties
-  import PropLTL
-  doctest PropLTL
+  import StreamData
+
+  import GenServerLTL
+  import QuickLTL
+  doctest GenServerLTL
 
   defmodule OnOff do
     use GenServer
@@ -54,7 +57,7 @@ defmodule PropLTLTest do
     end
 
     test "with unsatisfied proposition" do
-      assert_raise PropLTL.ViolatedProperty, ~r/lights are eventually turned on/, fn ->
+      assert_raise GenServerLTL.ViolatedProperty, ~r/lights are eventually turned on/, fn ->
         run_simulation(
           OnOff,
           self(),
@@ -69,7 +72,7 @@ defmodule PropLTLTest do
     end
 
     test "with violated proposition" do
-      assert_raise PropLTL.ViolatedProperty, ~r/the lights remain off forever/, fn ->
+      assert_raise GenServerLTL.ViolatedProperty, ~r/the lights remain off forever/, fn ->
         run_simulation(
           OnOff,
           self(),

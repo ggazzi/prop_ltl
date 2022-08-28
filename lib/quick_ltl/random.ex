@@ -1,5 +1,4 @@
-defmodule PropLTL.Proposition.Random do
-  import PropLTL.Proposition
+defmodule QuickLTL.Random do
   import StreamData
 
   def proposition(vars) do

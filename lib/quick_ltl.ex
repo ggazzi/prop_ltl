@@ -1,4 +1,4 @@
-defmodule PropLTL.Proposition do
+defmodule QuickLTL do
   @moduledoc """
   Propositions in a variant of linear temporal logic (LTL) for property-based testing.
 
@@ -169,7 +169,7 @@ defmodule PropLTL.Proposition do
   """
   def evaluate(p, trace, env \\ %{})
 
-  def evaluate(p, [], env) do
+  def evaluate(p, [], _env) do
     p |> unfold() |> conclude() |> simplify()
   end
 

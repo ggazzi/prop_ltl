@@ -1,9 +1,9 @@
-defmodule PropLtl.MixProject do
+defmodule QuickLTL.MixProject do
   use Mix.Project
 
   def project do
     [
-      app: :prop_ltl,
+      app: :quick_ltl,
       version: "0.1.0",
       elixir: "~> 1.13",
       start_permanent: Mix.env() == :prod,

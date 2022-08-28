@@ -30,13 +30,13 @@ defmodule GenServerLTL do
   end
 
   defp compile_property({:property, _, [name, [do: proposition]]}, caller) do
-    compiled = QuickLTL.compile_proposition(proposition, caller)
+    compiled = QuickLTL.Syntax.compile_proposition(proposition, caller)
     quote do: {unquote(name), unquote(compiled)}
   end
 
   defp compile_property({:invariant, _, [name, [do: proposition]]}, caller) do
     compiled =
-      QuickLTL.compile_proposition(
+      QuickLTL.Syntax.compile_proposition(
         quote do
           always(unquote(proposition))
         end,

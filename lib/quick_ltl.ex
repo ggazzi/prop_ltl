@@ -14,62 +14,113 @@ defmodule QuickLTL do
   A proposition in temporal logic will then describe which sequences of states are acceptable.
   """
 
-  @typedoc """
-  A proposition in a variant of linear temporal logic.
+  alias QuickLTL.Syntax
+
+  @doc """
+  Macro for writing temporal propositions with Elixir-like syntax.
+
+  FIXME: properly document the syntax
+
+  ## Examples
+
+  These examples show the internal representation of propositions,
+  which is unstable and subject to change!
+
+      iex> prop do
+      ...>   if true or not false, do: true
+      ...> end
+      {:implies, {:or, true, {:not, false}}, :true}
+
+      iex> p = prop always not state.x == 2
+      iex> match?(
+      ...>   {:always, {:expr, {fn1, _}}}
+      ...>     when is_function(fn1),
+      ...>   p
+      ...> )
+      true
+
+      iex> p = prop always not (state.x == 2)
+      iex> match?(
+      ...>   {:always, {:not, {:expr, {fn1, _}}}}
+      ...>     when is_function(fn1),
+      ...>   p
+      ...> )
+      true
+
+      iex> p = prop do
+      ...>   always do
+      ...>     let orig: state.x, do: until(state.x > orig, state.x == orig)
+      ...>   end
+      ...> end
+      iex> match?(
+      ...>   {:always,
+      ...>     {:let, [{:orig, {fn1, _}}],
+      ...>       {:until,
+      ...>         {:expr, {fn2, _}},
+      ...>         {:expr, {fn3, _}}
+      ...>       }
+      ...>     }
+      ...>   } when is_function(fn1) and is_function(fn2) and is_function(fn3),
+      ...>   p)
+      true
+
+      This macro can also be used as part of a pattern.
+
+      iex> x = true
+      iex> match?(prop(not _ and ^x), prop(not true and true))
+      true
+      iex> match?(prop(not _ and ^x), prop(not true and false))
+      false
+
+      The prefix operator `&` works like an `unquote` for props.
+
+      iex> prop do (&{:not, prop do true and false end}) or false end
+      prop not (true and false) or false
+
+      iex> prop do let x: (&1), do: true end
+      {:let, [x: 1], true}
+
+      iex> match?(
+      ...>   prop do always (&{:expr, _}) and true end,
+      ...>   prop do always (x == 2) and true end
+      ...> )
+      true
+
+      iex> x = :foo
+      iex> match?(
+      ...>   prop do let x: ^x, do: true end,
+      ...>   prop do let x: (&:foo), do: true end
+      ...> )
+      true
   """
-  @type prop ::
-          boolean()
-          | atomic
-          | {:let, Keyword.t(binder), prop}
-          | {:not, prop}
-          | {:and, prop, prop}
-          | {:or, prop, prop}
-          | {:implies, prop, prop}
-          | {:next, :weak | :strong, prop}
-          | {:always, prop}
-          | {:eventually, prop}
-          | {:until, prop, prop}
-          | {:weak_until, prop, prop}
+  defmacro prop(arg) do
+    Syntax.compile_proposition(arg, __CALLER__)
+  end
 
   @typedoc """
-  An atomic proposition in a variant of linear temporal logic.
+  Representation of a state of the system being specified with QuickLTL.
+
+  The system being specified is assumed to contain a set of variables
+  that may change over time. A state is just one assignment of arbitrary
+  Elixir values (`t:term/0`) to these variables.
+
+  Note that these variables may be shadowed by the `t:env/0` or by let-expressions.
   """
-  @type atomic ::
-          {:expr, {(state, env -> boolean), Macro.output()}}
-
-  # TODO: add an atomic and binding proposition for receiving messages
-
-  @type binder :: {(state, env -> term), Macro.output()} | term()
+  @type state :: %{atom => term}
 
   @typedoc """
-  A guarded proposition in a variant of linear temporal logic.
+  A logical environment under which a QuickLTL proposition may be evaluated.
 
-  Guarded propositions will have all temporal operators inside
-  at least one level of the `next` operator.
-  They are useful so we can easily `step/2` the evaluation of
-  the proposition for the current state of the system.
-  """
-  @type guarded_prop ::
-          boolean()
-          | atomic
-          | {:let, Keyword.t(binder), guarded_prop}
-          | {:not, guarded_prop}
-          | {:and, guarded_prop, guarded_prop}
-          | {:or, guarded_prop, guarded_prop}
-          | {:implies, guarded_prop, guarded_prop}
-          | {:next, :weak | :strong, prop}
+  Provides a set of variables whose values are unchanged over time, unlike
+  the `t:state/0`. Indeed, variables of the logical environment will shadow
+  those of the state if there is a name clash.
 
-  @typedoc """
-  Logical environment under which a proposition can be evaluated.
-
-  Provides values for any logical variables, which can be shadowed
-  by the proposition `let x: value do p end`.
+  The logical environment may be extended locally within a proposition
+  using the let-expression.
   """
   @type env :: %{atom => term}
 
-  @type state :: env
-
-  @spec evaluate_naive(prop, nonempty_list(state), env) :: boolean()
+  @spec evaluate_naive(Syntax.t(), nonempty_list(state), env) :: boolean()
   @doc """
   Evaluates the given proposition for the given state-trace.
 
@@ -79,7 +130,6 @@ defmodule QuickLTL do
   """
   def evaluate_naive(p, trace, env \\ %{})
 
-  @spec evaluate_naive(prop, nonempty_list(state :: env), env) :: boolean
   def evaluate_naive(true, _, _), do: true
   def evaluate_naive(false, _, _), do: false
 
@@ -145,6 +195,7 @@ defmodule QuickLTL do
   end
 
   defmodule NonemptyPostfixes do
+    @moduledoc false
     defstruct list: []
 
     defimpl Enumerable do
@@ -163,7 +214,7 @@ defmodule QuickLTL do
 
   defp nonempty_postfixes(list), do: %NonemptyPostfixes{list: list}
 
-  @spec evaluate(prop, nonempty_list(state), env) :: prop()
+  @spec evaluate(Syntax.t(), nonempty_list(state), env) :: Syntax.t()
   @doc """
   Evaluates the given proposition for the given state-trace.
   """
@@ -177,7 +228,7 @@ defmodule QuickLTL do
     p |> unfold() |> step(state) |> simplify() |> evaluate(future, env)
   end
 
-  @spec simplify(prop) :: prop
+  @spec simplify(Syntax.t()) :: Syntax.t()
   @doc """
   Simplify a proposition using some common equivalences.
 
@@ -326,7 +377,7 @@ defmodule QuickLTL do
 
   def simplify(prop), do: prop
 
-  @spec unfold(prop) :: guarded_prop
+  @spec unfold(Syntax.t()) :: Syntax.guarded()
   @doc """
   Rewrites the proposition so that the outermost temporal operator is always `next`.
 
@@ -377,7 +428,7 @@ defmodule QuickLTL do
   def unfold({:or, p, q}), do: {:or, unfold(p), unfold(q)}
   def unfold({:implies, p, q}), do: {:implies, unfold(p), unfold(q)}
 
-  @spec step(guarded_prop(), state(), env()) :: prop()
+  @spec step(Syntax.guarded(), state(), env()) :: Syntax.t()
   @doc """
   Evaluate the guarded proposition at the current state and environment.
 
@@ -478,7 +529,7 @@ defmodule QuickLTL do
     {:implies, step(p, state, env), step(q, state, env)}
   end
 
-  @spec conclude(prop) :: prop
+  @spec conclude(Syntax.t()) :: Syntax.t()
   @doc """
   Evaluate the guarded proposition at the end of a trace.
   Will essentially default the temporal operators to true or false depending on their semantics.
@@ -552,7 +603,7 @@ defmodule QuickLTL do
 
   def conclude(p), do: p
 
-  @spec conclude(guarded_prop, state, env) :: prop
+  @spec conclude(Syntax.guarded(), state, env) :: Syntax.guarded()
   @doc """
   Evaluate the guarded proposition at the end of a trace.
 
@@ -623,7 +674,7 @@ defmodule QuickLTL do
     {:implies, conclude(p, state, env), conclude(q, state, env)}
   end
 
-  @spec eval_binders(list(binder), state, env) :: {list(binder), env}
+  @spec eval_binders(list(Syntax.binder()), state, env) :: {list(Syntax.binder()), env}
   defp eval_binders(binders, state, outer_env) do
     {new_binders_rev, inner_env} =
       for binder <- binders, reduce: {[], outer_env} do
@@ -641,275 +692,5 @@ defmodule QuickLTL do
 
   defp eval_binder({name, value}, _state, _env) do
     {name, value}
-  end
-
-  @doc """
-  Macro for writing temporal propositions with Elixir-like syntax.
-
-  FIXME: properly document the syntax
-
-  ## Examples
-
-  These examples show the internal representation of propositions,
-  which is unstable and subject to change!
-
-      iex> prop do
-      ...>   if true or not false, do: true
-      ...> end
-      {:implies, {:or, true, {:not, false}}, :true}
-
-      iex> p = prop always not state.x == 2
-      iex> match?(
-      ...>   {:always, {:expr, {fn1, _}}}
-      ...>     when is_function(fn1),
-      ...>   p
-      ...> )
-      true
-
-      iex> p = prop always not (state.x == 2)
-      iex> match?(
-      ...>   {:always, {:not, {:expr, {fn1, _}}}}
-      ...>     when is_function(fn1),
-      ...>   p
-      ...> )
-      true
-
-      iex> p = prop do
-      ...>   always do
-      ...>     let orig: state.x, do: until(state.x > orig, state.x == orig)
-      ...>   end
-      ...> end
-      iex> match?(
-      ...>   {:always,
-      ...>     {:let, [{:orig, {fn1, _}}],
-      ...>       {:until,
-      ...>         {:expr, {fn2, _}},
-      ...>         {:expr, {fn3, _}}
-      ...>       }
-      ...>     }
-      ...>   } when is_function(fn1) and is_function(fn2) and is_function(fn3),
-      ...>   p)
-      true
-
-      This macro can also be used as part of a pattern.
-
-      iex> x = true
-      iex> match?(prop(not _ and ^x), prop(not true and true))
-      true
-      iex> match?(prop(not _ and ^x), prop(not true and false))
-      false
-
-      The prefix operator `&` works like an `unquote` for props.
-
-      iex> prop do (&{:not, prop do true and false end}) or false end
-      prop not (true and false) or false
-
-      iex> prop do let x: (&1), do: true end
-      {:let, [x: 1], true}
-
-      iex> match?(
-      ...>   prop do always (&{:expr, _}) and true end,
-      ...>   prop do always (x == 2) and true end
-      ...> )
-      true
-
-      iex> x = :foo
-      iex> match?(
-      ...>   prop do let x: ^x, do: true end,
-      ...>   prop do let x: (&:foo), do: true end
-      ...> )
-      true
-  """
-  defmacro prop(arg) do
-    compile_proposition(arg, __CALLER__)
-  end
-
-  @spec compile_proposition(Macro.input(), Macro.Env.t()) :: prop
-  @doc """
-  Transform an Elixir AST into the corresponding proposition.
-
-  For more information of the expected syntax, see `prop/1`.
-  """
-  def compile_proposition(true, _) do
-    true
-  end
-
-  def compile_proposition(false, _) do
-    false
-  end
-
-  def compile_proposition([do: prop], macro_env) do
-    compile_proposition(prop, macro_env)
-  end
-
-  def compile_proposition({:__block__, _, [prop]}, macro_env) do
-    compile_proposition(prop, macro_env)
-  end
-
-  def compile_proposition({:not, _opts, [prop]}, macro_env) do
-    quote do: {:not, unquote(compile_proposition(prop, macro_env))}
-  end
-
-  def compile_proposition({:and, _opts, [prop1, prop2]}, macro_env) do
-    quote do
-      {:and, unquote(compile_proposition(prop1, macro_env)),
-       unquote(compile_proposition(prop2, macro_env))}
-    end
-  end
-
-  def compile_proposition({:or, _opts, [prop1, prop2]}, macro_env) do
-    quote do
-      {:or, unquote(compile_proposition(prop1, macro_env)),
-       unquote(compile_proposition(prop2, macro_env))}
-    end
-  end
-
-  def compile_proposition({:if, _opts, [prop1, [do: prop2]]}, macro_env) do
-    quote do
-      {:implies, unquote(compile_proposition(prop1, macro_env)),
-       unquote(compile_proposition(prop2, macro_env))}
-    end
-  end
-
-  def compile_proposition({:next_weak, _opts, [prop]}, macro_env) do
-    quote do: {:next, :weak, unquote(compile_proposition(prop, macro_env))}
-  end
-
-  def compile_proposition({:next_strong, _opts, [prop]}, macro_env) do
-    quote do: {:next, :strong, unquote(compile_proposition(prop, macro_env))}
-  end
-
-  def compile_proposition({:always, _opts, [prop]}, macro_env) do
-    quote do: {:always, unquote(compile_proposition(prop, macro_env))}
-  end
-
-  def compile_proposition({:eventually, _opts, [prop]}, macro_env) do
-    quote do: {:eventually, unquote(compile_proposition(prop, macro_env))}
-  end
-
-  def compile_proposition({:until, _opts, [prop1, prop2]}, macro_env) do
-    quote do
-      {:until, unquote(compile_proposition(prop1, macro_env)),
-       unquote(compile_proposition(prop2, macro_env))}
-    end
-  end
-
-  def compile_proposition({:weak_until, _opts, [prop1, prop2]}, macro_env) do
-    quote do
-      {:weak_until, unquote(compile_proposition(prop1, macro_env)),
-       unquote(compile_proposition(prop2, macro_env))}
-    end
-  end
-
-  def compile_proposition({:_, _, context} = wildcard, _macro_env) when is_atom(context) do
-    wildcard
-  end
-
-  def compile_proposition({:^, _, _} = pin, _macro_env) do
-    pin
-  end
-
-  def compile_proposition({:&, _, [ast]}, _macro_env) do
-    ast
-  end
-
-  def compile_proposition({:let, _, [{:=, _, [{name, _, context}, expr]}]}, macro_env)
-      when is_atom(name) and is_atom(context) do
-    quote do
-      # TODO: remove
-      {:let, unquote(compile_binders([{name, expr}], macro_env)), :illegal}
-    end
-  end
-
-  def compile_proposition({:let, _, [binders, [do: expr]]}, macro_env) do
-    quote do
-      {:let, unquote(compile_binders(binders, macro_env)),
-       unquote(compile_proposition(expr, macro_env))}
-    end
-  end
-
-  def compile_proposition({:let, meta, [args]}, macro_env) do
-    {expr, binders} = Keyword.pop(args, :do)
-    compile_proposition({:let, meta, [binders, [do: expr]]}, macro_env)
-  end
-
-  def compile_proposition(expr, macro_env) do
-    quote do: {:expr, unquote(compile_atomic_evaluator(expr, macro_env))}
-  end
-
-  def compile_binders(binders, macro_env) do
-    for {name, expr} <- binders do
-      binder =
-        case expr do
-          {:&, _, [raw_expr]} -> raw_expr
-          {:^, _, [_]} = pin -> pin
-          _ -> compile_atomic_evaluator(expr, macro_env)
-        end
-
-      quote do: {unquote(name), unquote(binder)}
-    end
-  end
-
-  @spec compile_atomic_evaluator(Macro.input(), Macro.Env.t()) :: Macro.output()
-  @doc """
-  Produce an evaluator for an Elixir expression used as part of a proposition.
-
-  This expression is to be interpreted in a logical `t:env/0` that is put
-  on top of the usual Elixir variable scope.  That is, any free variables
-  of the expression should be looked up at evaluation time.
-  """
-  defp compile_atomic_evaluator(expr, macro_env) do
-    expr = Macro.expand(expr, macro_env)
-
-    evaluator =
-      if macro_env.context == :match do
-        quote do: _
-      else
-        outer_vars = Macro.Env.vars(macro_env)
-        state_var = Macro.unique_var(:state, __MODULE__)
-        env_var = Macro.unique_var(:env, __MODULE__)
-
-        lookups =
-          for {name, _, _} = var <- collect_vars(expr),
-              var_context(var) not in outer_vars do
-            quote do
-              unquote(var) =
-                Map.get_lazy(unquote(env_var), unquote(name), fn ->
-                  Map.get(unquote(state_var), unquote(name))
-                end)
-            end
-          end
-
-        quote do
-          fn unquote(state_var), unquote(env_var) ->
-            unquote_splicing(lookups)
-            unquote(expr)
-          end
-        end
-      end
-
-    quote do: {unquote(evaluator), unquote(Macro.escape(expr))}
-  end
-
-  @spec collect_vars(Macro.output()) :: MapSet.t()
-  def collect_vars(ast) do
-    Macro.prewalk(ast, MapSet.new(), fn
-      {skip, _, [_]}, acc when skip in [:^, :@] ->
-        {:ok, acc}
-
-      {:_, _, context}, acc when is_atom(context) ->
-        {:ok, acc}
-
-      {name, _, context} = var, acc when is_atom(name) and is_atom(context) ->
-        {:ok, MapSet.put(acc, var)}
-
-      node, acc ->
-        {node, acc}
-    end)
-    |> elem(1)
-  end
-
-  defp var_context({name, meta, context}) do
-    {name, meta[:counter] || context}
   end
 end

@@ -54,7 +54,7 @@ defmodule QuickLTL do
       ...> end
       iex> match?(
       ...>   {:always,
-      ...>     {:let, [{:orig, {fn1, _}}],
+      ...>     {:let, [{:orig, {:expr, {fn1, _}}}],
       ...>       {:until,
       ...>         {:expr, {fn2, _}},
       ...>         {:expr, {fn3, _}}
@@ -77,14 +77,17 @@ defmodule QuickLTL do
       iex> prop do (&{:not, prop do true and false end}) or false end
       prop not (true and false) or false
 
-      iex> prop do let x: (&1), do: true end
-      {:let, [x: 1], true}
+      iex> prop do let x: (&{:val, 1}), do: true end
+      {:let, [x: {:val, 1}], true}
 
       iex> match?(
       ...>   prop do always (&{:expr, _}) and true end,
       ...>   prop do always (x == 2) and true end
       ...> )
       true
+
+      Be careful with `&`, though, since you can create malformed syntax
+      trees with it. It is mostly useful for pattern matching.
 
       iex> x = :foo
       iex> match?(
@@ -459,13 +462,13 @@ defmodule QuickLTL do
       iex> q = step(p, %{x: 1})
       iex> match?(
       ...>   prop do
-      ...>     true and let orig: (&1) do
+      ...>     true and let orig: &{:val, 1} do
       ...>       true and x > orig
       ...>     end
       ...>   end,
       ...>   q)
       iex> step(q, %{x: 2})
-      prop do true and let orig: &1, do: true and true end
+      prop do true and let orig: &{:val, 1}, do: true and true end
 
   Note that let bindings can shadow outer bindings.
 
@@ -473,7 +476,7 @@ defmodule QuickLTL do
       ...>   let x: x + 1, do: x == 1
       ...> end
       iex> step(p, %{x: 0})
-      prop do let x: (&1), do: true end
+      prop do let x: &{:val, 1}, do: true end
 
   The outermost next operators will be removed, but *only* the outermost.
 
@@ -482,15 +485,15 @@ defmodule QuickLTL do
       ...> end
       iex> q = step(p, %{x: 1})
       iex> match?(
-      ...>   prop do let orig: &1, do: (&{:expr, _}) or next_weak(_) end,
+      ...>   prop do let orig: &{:val, 1}, do: (&{:expr, _}) or next_weak(_) end,
       ...>   q)
       true
       iex> r = step(q, %{x: 0})
       iex> match?(
-      ...>   prop do let orig: &1, do: false or &{:expr, _} end,
+      ...>   prop do let orig: &{:val, 1}, do: false or &{:expr, _} end,
       ...>   q)
       iex> step(r, %{x: 2})
-      prop do let orig: (&1), do: false or true end
+      prop do let orig: &{:val, 1}, do: false or true end
 
   """
   def step(p, state \\ %{}, env)
@@ -550,7 +553,7 @@ defmodule QuickLTL do
       ...> end
       iex> match?(
       ...>   prop do
-      ...>     (&{:expr, _}) and let orig: &{_, _}, do:
+      ...>     (&{:expr, _}) and let orig: &{:expr, _}, do:
       ...>       (&{:expr, _}) and true
       ...>   end,
       ...>   conclude(p))
@@ -603,94 +606,23 @@ defmodule QuickLTL do
 
   def conclude(p), do: p
 
-  @spec conclude(Syntax.guarded(), state, env) :: Syntax.guarded()
-  @doc """
-  Evaluate the guarded proposition at the end of a trace.
-
-  This is analogous to `step/2`, but assumes no states will follow the current one.
-  Thus, it will evaluate any `next` operators to `true` or `false` if they were
-  weak or strong, respectively.
-
-  ## Examples
-
-  Unguarded boolean expressions will be evaluated at the current state and environment.
-
-      iex> p = prop do x < zero or x > zero end
-      iex> conclude(p, %{x: 1}, %{zero: 0})
-      prop do false or true end
-
-  Let-bindings will also be resolved for the current state.
-
-      iex> p = prop do
-      ...>   x > 0 and let orig: x, do:
-      ...>     orig == x and next_weak(x > orig)
-      ...> end
-      iex> conclude(p, %{x: 1})
-      prop do true and let orig: &1, do:
-        true and true
-      end
-
-  The weak next operator will always conclude as true.
-
-      iex> p = prop do let x: state.x, do: next_weak(state.x == x + 1) end
-      iex> conclude(p, %{state: %{x: 1}})
-      prop do let x: (&1), do: true end
-
-  The strong next operator will always conclude as false.
-
-      iex> p = prop do let x: state.x, do: next_strong(state.x == x + 1) end
-      iex> conclude(p, %{state: %{x: 1}})
-      prop do let x: (&1), do: false end
-
-  """
-  def conclude(p, state \\ %{}, env)
-
-  def conclude(true, _state, _env), do: true
-  def conclude(false, _state, _env), do: false
-
-  def conclude({:next, :weak, _}, _state, _env), do: true
-  def conclude({:next, :strong, _}, _state, _env), do: false
-
-  def conclude({:expr, {eval, _src}}, state, env), do: eval.(state, env)
-
-  def conclude({:let, binders, p}, state, env) do
-    {binders, env} = eval_binders(binders, state, env)
-    {:let, binders, conclude(p, env)}
-  end
-
-  def conclude({:not, p}, state, env) do
-    {:not, conclude(p, state, env)}
-  end
-
-  def conclude({:and, p, q}, state, env) do
-    {:and, conclude(p, state, env), conclude(q, state, env)}
-  end
-
-  def conclude({:or, p, q}, state, env) do
-    {:or, conclude(p, state, env), conclude(q, state, env)}
-  end
-
-  def conclude({:implies, p, q}, state, env) do
-    {:implies, conclude(p, state, env), conclude(q, state, env)}
-  end
-
   @spec eval_binders(list(Syntax.binder()), state, env) :: {list(Syntax.binder()), env}
   defp eval_binders(binders, state, outer_env) do
     {new_binders_rev, inner_env} =
       for binder <- binders, reduce: {[], outer_env} do
         {acc, env} ->
-          {name, value} = eval_binder(binder, state, env)
-          {[{name, value} | acc], Map.put(env, name, value)}
+          {name, {:val, value}} = binder = eval_binder(binder, state, env)
+          {[binder | acc], Map.put(env, name, value)}
       end
 
     {Enum.reverse(new_binders_rev), inner_env}
   end
 
-  defp eval_binder({name, {eval, _src}}, state, env) do
-    {name, eval.(state, env)}
+  defp eval_binder({name, {:expr, {eval, _src}}}, state, env) do
+    {name, {:val, eval.(state, env)}}
   end
 
-  defp eval_binder({name, value}, _state, _env) do
-    {name, value}
+  defp eval_binder({name, {:val, value}}, _state, _env) do
+    {name, {:val, value}}
   end
 end

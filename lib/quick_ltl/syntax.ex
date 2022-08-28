@@ -38,7 +38,7 @@ defmodule QuickLTL.Syntax do
   """
   @type native_expr(t) :: {(QuickLTL.state(), QuickLTL.env() -> t), Macro.input()}
 
-  @type binder :: native_expr(term) | term
+  @type binder :: {:expr, native_expr(term)} | {:val, term}
 
   @typedoc """
   A QuickLTL proposition where temporal operators are guarded by the next operator.
@@ -172,7 +172,8 @@ defmodule QuickLTL.Syntax do
         case expr do
           {:&, _, [raw_expr]} -> raw_expr
           {:^, _, [_]} = pin -> pin
-          _ -> compile_native_expr(expr, macro_env)
+          {:_, _, context} when is_atom(context) -> expr
+          _ -> {:expr, compile_native_expr(expr, macro_env)}
         end
 
       quote do: {unquote(name), unquote(binder)}

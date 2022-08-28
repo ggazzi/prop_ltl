@@ -21,8 +21,7 @@ defmodule QuickLTL.Syntax do
           | {:next, :weak | :strong, t}
           | {:always, t}
           | {:eventually, t}
-          | {:until, t, t}
-          | {:weak_until, t, t}
+          | {:until, :weak | :strong, t, t}
 
   @typedoc """
   An atomic proposition.
@@ -116,16 +115,16 @@ defmodule QuickLTL.Syntax do
     quote do: {:eventually, unquote(compile_proposition(prop, macro_env))}
   end
 
-  def compile_proposition({:until, _opts, [prop1, prop2]}, macro_env) do
+  def compile_proposition({:until_strong, _opts, [prop1, prop2]}, macro_env) do
     quote do
-      {:until, unquote(compile_proposition(prop1, macro_env)),
+      {:until, :strong, unquote(compile_proposition(prop1, macro_env)),
        unquote(compile_proposition(prop2, macro_env))}
     end
   end
 
-  def compile_proposition({:weak_until, _opts, [prop1, prop2]}, macro_env) do
+  def compile_proposition({:until_weak, _opts, [prop1, prop2]}, macro_env) do
     quote do
-      {:weak_until, unquote(compile_proposition(prop1, macro_env)),
+      {:until, :weak, unquote(compile_proposition(prop1, macro_env)),
        unquote(compile_proposition(prop2, macro_env))}
     end
   end

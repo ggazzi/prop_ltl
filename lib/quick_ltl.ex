@@ -49,13 +49,13 @@ defmodule QuickLTL do
 
       iex> p = prop do
       ...>   always do
-      ...>     let orig: state.x, do: until(state.x > orig, state.x == orig)
+      ...>     let orig: state.x, do: until_strong(state.x > orig, state.x == orig)
       ...>   end
       ...> end
       iex> match?(
       ...>   {:always,
       ...>     {:let, [{:orig, {:expr, {fn1, _}}}],
-      ...>       {:until,
+      ...>       {:until, :strong,
       ...>         {:expr, {fn2, _}},
       ...>         {:expr, {fn3, _}}
       ...>       }
@@ -179,7 +179,7 @@ defmodule QuickLTL do
     nonempty_postfixes(trace) |> Enum.any?(&evaluate_naive(p, &1, env))
   end
 
-  def evaluate_naive({:until, goal, meanwhile}, trace, env) do
+  def evaluate_naive({:until, :strong, goal, meanwhile}, trace, env) do
     {before_goal, after_goal} =
       nonempty_postfixes(trace)
       |> Enum.split_while(fn subtrace -> not evaluate_naive(goal, subtrace, env) end)
@@ -191,7 +191,7 @@ defmodule QuickLTL do
     end
   end
 
-  def evaluate_naive({:weak_until, goal, meanwhile}, trace, env) do
+  def evaluate_naive({:until, :weak, goal, meanwhile}, trace, env) do
     nonempty_postfixes(trace)
     |> Stream.take_while(&(not evaluate_naive(goal, &1, env)))
     |> Enum.all?(&evaluate_naive(meanwhile, &1, env))
@@ -256,14 +256,14 @@ defmodule QuickLTL do
       iex> simplify prop(
       ...>   next_weak(false) or next_strong(false)
       ...>   or always(false) or eventually(false)
-      ...>   or until(false, true) or weak_until(false, false)
+      ...>   or until_strong(false, true) or until_weak(false, false)
       ...>)
       prop do next_weak(false) or always(false) end
 
       iex> simplify prop(
       ...>   next_weak(true) and next_strong(true)
       ...>   and always(true) and eventually(true)
-      ...>   and until(true, false) and weak_until(true, false)
+      ...>   and until_strong(true, false) and until_weak(true, false)
       ...> )
       prop do next_strong(true) and eventually(true) end
 
@@ -271,9 +271,9 @@ defmodule QuickLTL do
   atomic propositions as much as possible.
 
       iex> simplify prop not (always do
-      ...>   if true, do: weak_until(false, true)
+      ...>   if true, do: until_weak(false, true)
       ...> end)
-      prop eventually(until(true, false))
+      prop eventually(true)
 
       iex> p = simplify prop not (always do
       ...>   if x == 1, do: eventually(x == 2)
@@ -317,16 +317,15 @@ defmodule QuickLTL do
   def simplify({:not, {:and, p, q}}), do: simplify({:or, {:not, p}, {:not, q}})
   def simplify({:not, {:or, p, q}}), do: simplify({:and, {:not, p}, {:not, q}})
   def simplify({:not, {:implies, p, q}}), do: simplify({:and, p, {:not, q}})
-  def simplify({:not, {:next, :weak, p}}), do: simplify({:next, :strong, {:not, p}})
-  def simplify({:not, {:next, :strong, p}}), do: simplify({:next, :weak, {:not, p}})
+
+  def simplify({:not, {:next, strength, p}}),
+    do: simplify({:next, invert_strength(strength), {:not, p}})
+
   def simplify({:not, {:always, p}}), do: simplify({:eventually, {:not, p}})
   def simplify({:not, {:eventually, p}}), do: simplify({:always, {:not, p}})
 
-  def simplify({:not, {:until, p, q}}),
-    do: {:weak_until, simplify({:not, p}), simplify({:not, q})}
-
-  def simplify({:not, {:weak_until, p, q}}),
-    do: {:until, simplify({:not, p}), simplify({:not, q})}
+  def simplify({:not, {:until, strength, p, q}}),
+    do: simplify({:until, invert_strength(strength), {:not, p}, {:not, q}})
 
   def simplify({:not, p}) do
     case simplify(p) do
@@ -336,11 +335,11 @@ defmodule QuickLTL do
     end
   end
 
-  def simplify({:next, kind, p}) do
-    case {kind, simplify(p)} do
+  def simplify({:next, strength, p}) do
+    case {strength, simplify(p)} do
       {:weak, true} -> true
       {:strong, false} -> false
-      {_, other} -> {:next, kind, other}
+      {_, other} -> {:next, strength, other}
     end
   end
 
@@ -358,7 +357,7 @@ defmodule QuickLTL do
     end
   end
 
-  def simplify({:until, p, q}) do
+  def simplify({:until, :strong, p, q}) do
     case {simplify(p), simplify(q)} do
       {true, _} -> true
       {false, _} -> false
@@ -368,7 +367,7 @@ defmodule QuickLTL do
     end
   end
 
-  def simplify({:weak_until, p, q}) do
+  def simplify({:until, :weak, p, q}) do
     case {simplify(p), simplify(q)} do
       {true, _} -> true
       {_, true} -> true
@@ -379,6 +378,9 @@ defmodule QuickLTL do
   end
 
   def simplify(prop), do: prop
+
+  defp invert_strength(:weak), do: :strong
+  defp invert_strength(:strong), do: :weak
 
   @spec unfold(Syntax.t()) :: Syntax.guarded()
   @doc """
@@ -413,12 +415,8 @@ defmodule QuickLTL do
   def unfold({:always, p}), do: {:and, unfold(p), {:next, :weak, {:always, p}}}
   def unfold({:eventually, p}), do: {:or, unfold(p), {:next, :strong, {:eventually, p}}}
 
-  def unfold({:until, p, q}) do
-    {:or, unfold(p), {:and, unfold(q), {:next, :strong, {:until, p, q}}}}
-  end
-
-  def unfold({:weak_until, p, q}) do
-    {:or, unfold(p), {:and, unfold(q), {:next, :weak, {:until, p, q}}}}
+  def unfold({:until, strength, p, q}) do
+    {:or, unfold(p), {:and, unfold(q), {:next, strength, {:until, strength, p, q}}}}
   end
 
   def unfold(true), do: true
@@ -569,7 +567,7 @@ defmodule QuickLTL do
       iex> conclude(p)
       prop do false or true end
 
-      iex> p = prop do false or weak_until(state.x == x + 1, state.x == x) end
+      iex> p = prop do false or until_weak(state.x == x + 1, state.x == x) end
       iex> conclude(p)
       prop do false or true end
 
@@ -583,19 +581,17 @@ defmodule QuickLTL do
       iex> conclude(p)
       prop do false or false end
 
-      iex> p = prop do false or until(state.x == x + 1, state.x == x) end
+      iex> p = prop do false or until_strong(state.x == x + 1, state.x == x) end
       iex> conclude(p)
       prop do false or false end
 
   """
-  def conclude({:next, :weak, _}), do: true
-  def conclude({:next, :strong, _}), do: false
+  def conclude({:next, strength, _}), do: conclude_strength(strength)
 
   def conclude({:always, _}), do: true
   def conclude({:eventually, _}), do: false
 
-  def conclude({:until, _, _}), do: false
-  def conclude({:weak_until, _, _}), do: true
+  def conclude({:until, strength, _, _}), do: conclude_strength(strength)
 
   def conclude({:not, p}), do: {:not, conclude(p)}
   def conclude({:and, p, q}), do: {:and, conclude(p), conclude(q)}
@@ -605,6 +601,9 @@ defmodule QuickLTL do
   def conclude({:let, binders, p}), do: {:let, binders, conclude(p)}
 
   def conclude(p), do: p
+
+  defp conclude_strength(:weak), do: true
+  defp conclude_strength(:strong), do: false
 
   @spec eval_binders(list(Syntax.binder()), state, env) :: {list(Syntax.binder()), env}
   defp eval_binders(binders, state, outer_env) do

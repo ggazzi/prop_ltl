@@ -201,42 +201,25 @@ defmodule QuickLTL do
     nonempty_postfixes(trace) |> Enum.any?(&evaluate_naive(p, &1, env))
   end
 
-  def evaluate_naive({operator, strength, goal, meanwhile}, trace, env)
-      when operator in [:until, :release] and strength in [:weak, :strong] do
-    case relevant_postfixes(operator, strength, goal, trace, env) do
+  def evaluate_naive({:until, strength, goal, meanwhile}, trace, env)
+      when strength in [:weak, :strong] do
+    case relevant_postfixes(strength, goal, trace, env) do
       nil -> false
       postfixes -> Enum.all?(postfixes, &evaluate_naive(meanwhile, &1, env))
     end
   end
 
-  defp relevant_postfixes(:until, :weak, goal, trace, env) do
+  defp relevant_postfixes(:weak, goal, trace, env) do
     nonempty_postfixes(trace) |> Enum.take_while(&(not evaluate_naive(goal, &1, env)))
   end
 
-  defp relevant_postfixes(:release, :weak, goal, trace, env) do
-    {before_goal, starting_at_goal} =
-      nonempty_postfixes(trace) |> Enum.split_while(&(not evaluate_naive(goal, &1, env)))
-
-    Enum.take(starting_at_goal, 1) ++ before_goal
-  end
-
-  defp relevant_postfixes(:until, :strong, goal, trace, env) do
+  defp relevant_postfixes(:strong, goal, trace, env) do
     {before_goal, starting_at_goal} =
       nonempty_postfixes(trace) |> Enum.split_while(&(not evaluate_naive(goal, &1, env)))
 
     case starting_at_goal do
       [] -> nil
       [_ | _] -> before_goal
-    end
-  end
-
-  defp relevant_postfixes(:release, :strong, goal, trace, env) do
-    {before_goal, starting_at_goal} =
-      nonempty_postfixes(trace) |> Enum.split_while(&(not evaluate_naive(goal, &1, env)))
-
-    case starting_at_goal do
-      [] -> nil
-      [with_goal | _] -> [with_goal | before_goal]
     end
   end
 
@@ -345,8 +328,8 @@ defmodule QuickLTL do
   def simplify({:not, {:always, p}}), do: simplify({:eventually, {:not, p}})
   def simplify({:not, {:eventually, p}}), do: simplify({:always, {:not, p}})
 
-  def simplify({:not, {operator, strength, p, q}}) when operator in [:until, :release],
-    do: simplify({dual(operator), dual(strength), {:not, q}, {:not, p}})
+  def simplify({:not, {:until, strength, p, q}}),
+    do: simplify({:until, dual(strength), {:and, {:not, q}, {:not, p}}, {:not, p}})
 
   def simplify({:not, p}) do
     case simplify(p) do
@@ -426,16 +409,6 @@ defmodule QuickLTL do
     end
   end
 
-  def simplify({:release, :strong, goal, meanwhile}) do
-    case {simplify(goal), simplify(meanwhile)} do
-      {true, meanwhile} -> meanwhile
-      {false, _} -> false
-      {_, false} -> false
-      {goal, true} -> {:eventually, goal}
-      {goal, meanwhile} -> {:release, :strong, goal, meanwhile}
-    end
-  end
-
   def simplify({:until, :weak, goal, meanwhile}) do
     case {simplify(goal), simplify(meanwhile)} do
       {_, true} -> true
@@ -446,22 +419,10 @@ defmodule QuickLTL do
     end
   end
 
-  def simplify({:release, :weak, goal, meanwhile}) do
-    case {simplify(goal), simplify(meanwhile)} do
-      {_, true} -> true
-      {_, false} -> false
-      {true, meanwhile} -> meanwhile
-      {false, meanwhile} -> {:always, meanwhile}
-      {goal, meanwhile} -> {:release, :weak, goal, meanwhile}
-    end
-  end
-
   def simplify(prop), do: prop
 
   defp dual(:weak), do: :strong
   defp dual(:strong), do: :weak
-  defp dual(:until), do: :release
-  defp dual(:release), do: :until
 
   @spec unfold(t | Syntax.t()) :: Syntax.guarded()
   @doc """
@@ -500,10 +461,6 @@ defmodule QuickLTL do
 
   def unfold({:until, strength, p, q}) do
     {:or, unfold(p), {:and, unfold(q), {:next, strength, {:until, strength, p, q}}}}
-  end
-
-  def unfold({:release, strength, p, q}) do
-    {:and, unfold(q), {:or, unfold(p), {:next, strength, {:release, strength, p, q}}}}
   end
 
   def unfold(true), do: true

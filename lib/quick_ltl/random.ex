@@ -6,27 +6,30 @@ defmodule QuickLTL.Random do
 
     # TODO: generate propositions that actually extend the scope with let
 
-    tree(atom, fn child_gen ->
-      variants = [
-        {:not, child_gen},
-        {:and, child_gen, child_gen},
-        {:or, child_gen, child_gen},
-        {:implies, child_gen, child_gen},
-        {:next, member_of([:weak, :strong]), child_gen},
-        {:always, child_gen},
-        {:eventually, child_gen},
-        {:until, member_of([:weak, :strong]), child_gen, child_gen}
-      ]
+    ast =
+      tree(atom, fn child_gen ->
+        variants = [
+          {:not, child_gen},
+          {:and, child_gen, child_gen},
+          {:or, child_gen, child_gen},
+          {:implies, child_gen, child_gen},
+          {:next, member_of([:weak, :strong]), child_gen},
+          {:always, child_gen},
+          {:eventually, child_gen},
+          {:until, member_of([:weak, :strong]), child_gen, child_gen}
+        ]
 
-      one_of(
-        if Enum.empty?(vars) do
-          variants
-        else
-          binder = {member_of(vars), {:expr, native_expr_boolean(vars)}}
-          [{:let, nonempty(list_of(binder)), child_gen} | variants]
-        end
-      )
-    end)
+        one_of(
+          if Enum.empty?(vars) do
+            variants
+          else
+            binder = {member_of(vars), {:expr, native_expr_boolean(vars)}}
+            [{:let, nonempty(list_of(binder)), child_gen} | variants]
+          end
+        )
+      end)
+
+    map(ast, &%QuickLTL{ast: &1})
   end
 
   def state(vars) do

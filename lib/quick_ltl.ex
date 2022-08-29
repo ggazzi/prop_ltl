@@ -16,6 +16,25 @@ defmodule QuickLTL do
 
   alias QuickLTL.Syntax
 
+  defstruct [:ast]
+
+  @type t :: %__MODULE__{ast: Syntax.t()}
+  @type guarded :: %__MODULE__{ast: Syntax.guarded()}
+
+  defimpl Inspect do
+    def inspect(%QuickLTL{ast: ast}, _opts) do
+      quoted = Syntax.proposition_to_quoted(ast)
+
+      Code.quoted_to_algebra(
+        quote do
+          prop do
+            unquote(quoted)
+          end
+        end
+      )
+    end
+  end
+
   @doc """
   Macro for writing temporal propositions with Elixir-like syntax.
 
@@ -29,20 +48,20 @@ defmodule QuickLTL do
       iex> prop do
       ...>   if true or not false, do: true
       ...> end
-      {:implies, {:or, true, {:not, false}}, :true}
+      %QuickLTL{ast: {:implies, {:or, true, {:not, false}}, :true} }
 
       iex> p = prop always not state.x == 2
-      iex> match?(
+      iex> match?(%QuickLTL{ast:
       ...>   {:always, {:expr, {fn1, _}}}
-      ...>     when is_function(fn1),
+      ...>     } when is_function(fn1),
       ...>   p
       ...> )
       true
 
       iex> p = prop always not (state.x == 2)
-      iex> match?(
+      iex> match?(%QuickLTL{ast:
       ...>   {:always, {:not, {:expr, {fn1, _}}}}
-      ...>     when is_function(fn1),
+      ...>     } when is_function(fn1),
       ...>   p
       ...> )
       true
@@ -52,7 +71,7 @@ defmodule QuickLTL do
       ...>     let orig: state.x, do: until_strong(state.x > orig, state.x == orig)
       ...>   end
       ...> end
-      iex> match?(
+      iex> match?(%QuickLTL{ast:
       ...>   {:always,
       ...>     {:let, [{:orig, {:expr, {fn1, _}}}],
       ...>       {:until, :strong,
@@ -60,7 +79,7 @@ defmodule QuickLTL do
       ...>         {:expr, {fn3, _}}
       ...>       }
       ...>     }
-      ...>   } when is_function(fn1) and is_function(fn2) and is_function(fn3),
+      ...>   }} when is_function(fn1) and is_function(fn2) and is_function(fn3),
       ...>   p)
       true
 
@@ -74,11 +93,11 @@ defmodule QuickLTL do
 
       The prefix operator `&` works like an `unquote` for props.
 
-      iex> prop do (&{:not, prop do true and false end}) or false end
+      iex> prop do (&{:not, (prop do true and false end).ast}) or false end
       prop not (true and false) or false
 
       iex> prop do let x: (&{:val, 1}), do: true end
-      {:let, [x: {:val, 1}], true}
+      %QuickLTL{ast: {:let, [x: {:val, 1}], true} }
 
       iex> match?(
       ...>   prop do always (&{:expr, _}) and true end,
@@ -97,7 +116,8 @@ defmodule QuickLTL do
       true
   """
   defmacro prop(arg) do
-    Syntax.compile_proposition(arg, __CALLER__)
+    ast = Syntax.compile_proposition(arg, __CALLER__)
+    quote do: %unquote(__MODULE__){ast: unquote(ast)}
   end
 
   @typedoc """
@@ -123,7 +143,7 @@ defmodule QuickLTL do
   """
   @type env :: %{atom => term}
 
-  @spec evaluate_naive(Syntax.t(), nonempty_list(state), env) :: boolean()
+  @spec evaluate_naive(t | Syntax.t(), nonempty_list(state), env) :: boolean()
   @doc """
   Evaluates the given proposition for the given state-trace.
 
@@ -132,6 +152,8 @@ defmodule QuickLTL do
   implementation.
   """
   def evaluate_naive(p, trace, env \\ %{})
+
+  def evaluate_naive(%__MODULE__{ast: p}, trace, env), do: evaluate_naive(p, trace, env)
 
   def evaluate_naive(true, _, _), do: true
   def evaluate_naive(false, _, _), do: false
@@ -217,11 +239,14 @@ defmodule QuickLTL do
 
   defp nonempty_postfixes(list), do: %NonemptyPostfixes{list: list}
 
-  @spec evaluate(Syntax.t(), nonempty_list(state), env) :: Syntax.t()
+  @spec evaluate(t | Syntax.t(), nonempty_list(state), env) :: Syntax.t()
   @doc """
   Evaluates the given proposition for the given state-trace.
   """
   def evaluate(p, trace, env \\ %{})
+
+  def evaluate(%__MODULE__{ast: p}, trace, env),
+    do: %__MODULE__{ast: evaluate(p, trace, env)}
 
   def evaluate(p, [], _env) do
     p |> unfold() |> conclude() |> simplify()
@@ -231,7 +256,7 @@ defmodule QuickLTL do
     p |> unfold() |> step(state) |> simplify() |> evaluate(future, env)
   end
 
-  @spec simplify(Syntax.t()) :: Syntax.t()
+  @spec simplify(t | Syntax.t()) :: Syntax.t()
   @doc """
   Simplify a proposition using some common equivalences.
 
@@ -246,10 +271,10 @@ defmodule QuickLTL do
       iex> simplify prop(
       ...>   if true or not false, do: false
       ...> )
-      false
+      prop false
 
       iex> simplify prop true or (if not false, do: false)
-      true
+      prop true
 
   This works even for propositions containing temporal operators!
 
@@ -283,6 +308,7 @@ defmodule QuickLTL do
       ...>   p)
       true
   """
+  def simplify(%__MODULE__{ast: p}), do: %__MODULE__{ast: simplify(p)}
 
   def simplify({:and, p, q}) do
     case {simplify(p), simplify(q)} do
@@ -382,7 +408,7 @@ defmodule QuickLTL do
   defp invert_strength(:weak), do: :strong
   defp invert_strength(:strong), do: :weak
 
-  @spec unfold(Syntax.t()) :: Syntax.guarded()
+  @spec unfold(t | Syntax.t()) :: Syntax.guarded()
   @doc """
   Rewrites the proposition so that the outermost temporal operator is always `next`.
 
@@ -411,6 +437,8 @@ defmodule QuickLTL do
       TODO: more tests
 
   """
+  def unfold(%__MODULE__{ast: p}), do: %__MODULE__{ast: unfold(p)}
+
   def unfold({:next, _, _} = p), do: p
   def unfold({:always, p}), do: {:and, unfold(p), {:next, :weak, {:always, p}}}
   def unfold({:eventually, p}), do: {:or, unfold(p), {:next, :strong, {:eventually, p}}}
@@ -429,7 +457,7 @@ defmodule QuickLTL do
   def unfold({:or, p, q}), do: {:or, unfold(p), unfold(q)}
   def unfold({:implies, p, q}), do: {:implies, unfold(p), unfold(q)}
 
-  @spec step(Syntax.guarded(), state(), env()) :: Syntax.t()
+  @spec step(guarded | Syntax.guarded(), state(), env()) :: Syntax.t()
   @doc """
   Evaluate the guarded proposition at the current state and environment.
 
@@ -496,6 +524,9 @@ defmodule QuickLTL do
   """
   def step(p, state \\ %{}, env)
 
+  def step(%__MODULE__{ast: p}, state, env),
+    do: %__MODULE__{ast: step(p, state, env)}
+
   def step(true, _state, _env), do: true
   def step(false, _state, _env), do: false
 
@@ -530,7 +561,7 @@ defmodule QuickLTL do
     {:implies, step(p, state, env), step(q, state, env)}
   end
 
-  @spec conclude(Syntax.t()) :: Syntax.t()
+  @spec conclude(t | Syntax.t()) :: Syntax.t()
   @doc """
   Evaluate the guarded proposition at the end of a trace.
   Will essentially default the temporal operators to true or false depending on their semantics.
@@ -586,6 +617,8 @@ defmodule QuickLTL do
       prop do false or false end
 
   """
+  def conclude(%__MODULE__{ast: p}), do: %__MODULE__{ast: conclude(p)}
+
   def conclude({:next, strength, _}), do: conclude_strength(strength)
 
   def conclude({:always, _}), do: true

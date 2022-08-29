@@ -8,14 +8,15 @@ defmodule QuickLTLTest do
   alias QuickLTL.Syntax
 
   property "printing and parsing roundtrip" do
-    # This tests the compatibility of three things:
-    #    1. Syntax.proposition_to_quoted
-    #    2. Syntax.compile_proposition
-    #    3. Random.proposition
+    # This tests the compatibility of four things:
+    #    1. Syntax.proposition_to_quoted/1
+    #    2. Syntax.compile_proposition/2
+    #    3. Random.proposition/1
+    #    4. evaluate_naive/2
     check all(
             vars <- list_of(atom(:alphanumeric)),
             original <- Random.proposition(vars),
-            quoted = Syntax.proposition_to_quoted(original),
+            quoted = Syntax.proposition_to_quoted(original.ast),
             {compiled, _} = Code.eval_quoted(Syntax.compile_proposition(quoted, __ENV__))
           ) do
       assert Syntax.proposition_to_quoted(compiled) == quoted

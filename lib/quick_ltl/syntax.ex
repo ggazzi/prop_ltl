@@ -22,6 +22,7 @@ defmodule QuickLTL.Syntax do
           | {:always, t}
           | {:eventually, t}
           | {:until, :weak | :strong, t, t}
+          | {:release, :weak | :strong, t, t}
 
   @typedoc """
   Embedding of a native Elixir expression into the QuickLTL syntax.
@@ -87,11 +88,9 @@ defmodule QuickLTL.Syntax do
     quote do: unquote(operator)(unquote(proposition_to_quoted(p)))
   end
 
-  def proposition_to_quoted({:until, strength, p1, p2}) do
-    operator = :"until_#{strength}"
-
+  def proposition_to_quoted({operator, strength, p1, p2}) when operator in [:until, :release] do
     quote do
-      unquote(operator)(
+      unquote(:"#{operator}_#{strength}")(
         unquote(proposition_to_quoted(p1)),
         unquote(proposition_to_quoted(p2))
       )
@@ -180,6 +179,20 @@ defmodule QuickLTL.Syntax do
   def compile_proposition({:until_weak, _opts, [prop1, prop2]}, macro_env) do
     quote do
       {:until, :weak, unquote(compile_proposition(prop1, macro_env)),
+       unquote(compile_proposition(prop2, macro_env))}
+    end
+  end
+
+  def compile_proposition({:release_strong, _opts, [prop1, prop2]}, macro_env) do
+    quote do
+      {:release, :strong, unquote(compile_proposition(prop1, macro_env)),
+       unquote(compile_proposition(prop2, macro_env))}
+    end
+  end
+
+  def compile_proposition({:release_weak, _opts, [prop1, prop2]}, macro_env) do
+    quote do
+      {:release, :weak, unquote(compile_proposition(prop1, macro_env)),
        unquote(compile_proposition(prop2, macro_env))}
     end
   end

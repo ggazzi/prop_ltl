@@ -201,22 +201,43 @@ defmodule QuickLTL do
     nonempty_postfixes(trace) |> Enum.any?(&evaluate_naive(p, &1, env))
   end
 
-  def evaluate_naive({:until, :strong, goal, meanwhile}, trace, env) do
-    {before_goal, after_goal} =
-      nonempty_postfixes(trace)
-      |> Enum.split_while(fn subtrace -> not evaluate_naive(goal, subtrace, env) end)
-
-    if after_goal == [] do
-      false
-    else
-      Enum.all?(before_goal, fn subtrace -> evaluate_naive(meanwhile, subtrace, env) end)
+  def evaluate_naive({operator, strength, goal, meanwhile}, trace, env)
+      when operator in [:until, :release] and strength in [:weak, :strong] do
+    case relevant_postfixes(operator, strength, goal, trace, env) do
+      nil -> false
+      postfixes -> Enum.all?(postfixes, &evaluate_naive(meanwhile, &1, env))
     end
   end
 
-  def evaluate_naive({:until, :weak, goal, meanwhile}, trace, env) do
-    nonempty_postfixes(trace)
-    |> Stream.take_while(&(not evaluate_naive(goal, &1, env)))
-    |> Enum.all?(&evaluate_naive(meanwhile, &1, env))
+  defp relevant_postfixes(:until, :weak, goal, trace, env) do
+    nonempty_postfixes(trace) |> Enum.take_while(&(not evaluate_naive(goal, &1, env)))
+  end
+
+  defp relevant_postfixes(:release, :weak, goal, trace, env) do
+    {before_goal, starting_at_goal} =
+      nonempty_postfixes(trace) |> Enum.split_while(&(not evaluate_naive(goal, &1, env)))
+
+    Enum.take(starting_at_goal, 1) ++ before_goal
+  end
+
+  defp relevant_postfixes(:until, :strong, goal, trace, env) do
+    {before_goal, starting_at_goal} =
+      nonempty_postfixes(trace) |> Enum.split_while(&(not evaluate_naive(goal, &1, env)))
+
+    case starting_at_goal do
+      [] -> nil
+      [_ | _] -> before_goal
+    end
+  end
+
+  defp relevant_postfixes(:release, :strong, goal, trace, env) do
+    {before_goal, starting_at_goal} =
+      nonempty_postfixes(trace) |> Enum.split_while(&(not evaluate_naive(goal, &1, env)))
+
+    case starting_at_goal do
+      [] -> nil
+      [with_goal | _] -> [with_goal | before_goal]
+    end
   end
 
   defmodule NonemptyPostfixes do
@@ -248,8 +269,8 @@ defmodule QuickLTL do
   def evaluate(%__MODULE__{ast: p}, trace, env),
     do: %__MODULE__{ast: evaluate(p, trace, env)}
 
-  def evaluate(p, [], _env) do
-    p |> unfold() |> conclude() |> simplify()
+  def evaluate(p, [state], _env) do
+    p |> unfold() |> conclude(state) |> simplify()
   end
 
   def evaluate(p, [state | future], env) do
@@ -276,6 +297,9 @@ defmodule QuickLTL do
       iex> simplify prop true or (if not false, do: false)
       prop true
 
+      iex> simplify prop(let x: state.x + 1, do: true)
+      prop true
+
   This works even for propositions containing temporal operators!
 
       iex> simplify prop(
@@ -298,7 +322,7 @@ defmodule QuickLTL do
       iex> simplify prop not (always do
       ...>   if true, do: until_weak(false, true)
       ...> end)
-      prop eventually(true)
+      prop false
 
       iex> p = simplify prop not (always do
       ...>   if x == 1, do: eventually(x == 2)
@@ -307,8 +331,38 @@ defmodule QuickLTL do
       ...>   prop do eventually(_ and always(not _)) end,
       ...>   p)
       true
+
   """
   def simplify(%__MODULE__{ast: p}), do: %__MODULE__{ast: simplify(p)}
+
+  def simplify({:not, {:and, p, q}}), do: simplify({:or, {:not, p}, {:not, q}})
+  def simplify({:not, {:or, p, q}}), do: simplify({:and, {:not, p}, {:not, q}})
+  def simplify({:not, {:implies, p, q}}), do: simplify({:and, p, {:not, q}})
+
+  def simplify({:not, {:next, strength, p}}),
+    do: simplify({:next, dual(strength), {:not, p}})
+
+  def simplify({:not, {:always, p}}), do: simplify({:eventually, {:not, p}})
+  def simplify({:not, {:eventually, p}}), do: simplify({:always, {:not, p}})
+
+  def simplify({:not, {operator, strength, p, q}}) when operator in [:until, :release],
+    do: simplify({dual(operator), dual(strength), {:not, q}, {:not, p}})
+
+  def simplify({:not, p}) do
+    case simplify(p) do
+      true -> false
+      false -> true
+      other -> {:not, other}
+    end
+  end
+
+  def simplify({:let, binders, p}) do
+    case simplify(p) do
+      true -> true
+      false -> false
+      other -> {:let, binders, other}
+    end
+  end
 
   def simplify({:and, p, q}) do
     case {simplify(p), simplify(q)} do
@@ -340,27 +394,6 @@ defmodule QuickLTL do
     end
   end
 
-  def simplify({:not, {:and, p, q}}), do: simplify({:or, {:not, p}, {:not, q}})
-  def simplify({:not, {:or, p, q}}), do: simplify({:and, {:not, p}, {:not, q}})
-  def simplify({:not, {:implies, p, q}}), do: simplify({:and, p, {:not, q}})
-
-  def simplify({:not, {:next, strength, p}}),
-    do: simplify({:next, invert_strength(strength), {:not, p}})
-
-  def simplify({:not, {:always, p}}), do: simplify({:eventually, {:not, p}})
-  def simplify({:not, {:eventually, p}}), do: simplify({:always, {:not, p}})
-
-  def simplify({:not, {:until, strength, p, q}}),
-    do: simplify({:until, invert_strength(strength), {:not, p}, {:not, q}})
-
-  def simplify({:not, p}) do
-    case simplify(p) do
-      true -> false
-      false -> true
-      other -> {:not, other}
-    end
-  end
-
   def simplify({:next, strength, p}) do
     case {strength, simplify(p)} do
       {:weak, true} -> true
@@ -383,30 +416,52 @@ defmodule QuickLTL do
     end
   end
 
-  def simplify({:until, :strong, p, q}) do
-    case {simplify(p), simplify(q)} do
+  def simplify({:until, :strong, goal, meanwhile}) do
+    case {simplify(goal), simplify(meanwhile)} do
       {true, _} -> true
       {false, _} -> false
-      {other, false} -> other
-      {other, true} -> {:eventually, other}
-      {other1, other2} -> {:until, other1, other2}
+      {goal, false} -> goal
+      {goal, true} -> {:eventually, goal}
+      {goal, meanwhile} -> {:until, :strong, goal, meanwhile}
     end
   end
 
-  def simplify({:until, :weak, p, q}) do
-    case {simplify(p), simplify(q)} do
-      {true, _} -> true
+  def simplify({:release, :strong, goal, meanwhile}) do
+    case {simplify(goal), simplify(meanwhile)} do
+      {true, meanwhile} -> meanwhile
+      {false, _} -> false
+      {_, false} -> false
+      {goal, true} -> {:eventually, goal}
+      {goal, meanwhile} -> {:release, :strong, goal, meanwhile}
+    end
+  end
+
+  def simplify({:until, :weak, goal, meanwhile}) do
+    case {simplify(goal), simplify(meanwhile)} do
       {_, true} -> true
-      {other, false} -> other
-      {false, other} -> {:always, other}
-      {other1, other2} -> {:weak_until, other1, other2}
+      {goal, false} -> goal
+      {true, _} -> true
+      {false, meanwhile} -> {:always, meanwhile}
+      {goal, meanwhile} -> {:until, :weak, goal, meanwhile}
+    end
+  end
+
+  def simplify({:release, :weak, goal, meanwhile}) do
+    case {simplify(goal), simplify(meanwhile)} do
+      {_, true} -> true
+      {_, false} -> false
+      {true, meanwhile} -> meanwhile
+      {false, meanwhile} -> {:always, meanwhile}
+      {goal, meanwhile} -> {:release, :weak, goal, meanwhile}
     end
   end
 
   def simplify(prop), do: prop
 
-  defp invert_strength(:weak), do: :strong
-  defp invert_strength(:strong), do: :weak
+  defp dual(:weak), do: :strong
+  defp dual(:strong), do: :weak
+  defp dual(:until), do: :release
+  defp dual(:release), do: :until
 
   @spec unfold(t | Syntax.t()) :: Syntax.guarded()
   @doc """
@@ -445,6 +500,10 @@ defmodule QuickLTL do
 
   def unfold({:until, strength, p, q}) do
     {:or, unfold(p), {:and, unfold(q), {:next, strength, {:until, strength, p, q}}}}
+  end
+
+  def unfold({:release, strength, p, q}) do
+    {:and, unfold(q), {:or, unfold(p), {:next, strength, {:release, strength, p, q}}}}
   end
 
   def unfold(true), do: true
@@ -561,82 +620,77 @@ defmodule QuickLTL do
     {:implies, step(p, state, env), step(q, state, env)}
   end
 
-  @spec conclude(t | Syntax.t()) :: Syntax.t()
+  @spec conclude(guarded | Syntax.guarded(), state, env) :: guarded | Syntax.guarded()
   @doc """
   Evaluate the guarded proposition at the end of a trace.
-  Will essentially default the temporal operators to true or false depending on their semantics.
+
+  This is analogous to `step/2`, but assumes no states will follow the current one.
+  Thus, it will evaluate any `next` operators to `true` or `false` if they were
+  weak or strong, respectively.
 
   ## Examples
 
-  Boolean expressions will not be evaluated.
+  Unguarded boolean expressions will be evaluated at the current state and environment.
 
       iex> p = prop do x < zero or x > zero end
-      iex> conclude(p)
-      p
+      iex> conclude(p, %{x: 1}, %{zero: 0})
+      prop do false or true end
 
-  Let-bindings will also not be evaluated.
+  Let-bindings will also be resolved for the current state.
 
       iex> p = prop do
       ...>   x > 0 and let orig: x, do:
       ...>     orig == x and next_weak(x > orig)
       ...> end
-      iex> match?(
-      ...>   prop do
-      ...>     (&{:expr, _}) and let orig: &{:expr, _}, do:
-      ...>       (&{:expr, _}) and true
-      ...>   end,
-      ...>   conclude(p))
-      true
+      iex> conclude(p, %{x: 1})
+      prop do true and let orig: &{:val, 1}, do:
+        true and true
+      end
 
-  The weak next, always and weak_until operators will always conclude as true.
+  The weak next operator will always conclude as true.
 
-      iex> p = prop do false or next_weak(state.x == x + 1) end
-      iex> conclude(p)
-      prop do false or true end
+      iex> p = prop do let x: state.x, do: next_weak(state.x == x + 1) end
+      iex> conclude(p, %{state: %{x: 1}})
+      prop do let x: &{:val, 1}, do: true end
 
-      iex> p = prop do false or always(state.x == x + 1) end
-      iex> conclude(p)
-      prop do false or true end
+  The strong next operator will always conclude as false.
 
-      iex> p = prop do false or until_weak(state.x == x + 1, state.x == x) end
-      iex> conclude(p)
-      prop do false or true end
-
-  The strong next, eventually and until operators will always conclude as false.
-
-      iex> p = prop do false or next_strong(state.x == x + 1) end
-      iex> conclude(p)
-      prop do false or false end
-
-      iex> p = prop do false or eventually(state.x == x + 1) end
-      iex> conclude(p)
-      prop do false or false end
-
-      iex> p = prop do false or until_strong(state.x == x + 1, state.x == x) end
-      iex> conclude(p)
-      prop do false or false end
+      iex> p = prop do let x: state.x, do: next_strong(state.x == x + 1) end
+      iex> conclude(p, %{state: %{x: 1}})
+      prop do let x: &{:val, 1}, do: false end
 
   """
-  def conclude(%__MODULE__{ast: p}), do: %__MODULE__{ast: conclude(p)}
+  def conclude(p, state \\ %{}, env)
+  def conclude(%__MODULE__{ast: p}, state, env), do: %__MODULE__{ast: conclude(p, state, env)}
 
-  def conclude({:next, strength, _}), do: conclude_strength(strength)
+  def conclude(true, _state, _env), do: true
+  def conclude(false, _state, _env), do: false
 
-  def conclude({:always, _}), do: true
-  def conclude({:eventually, _}), do: false
+  def conclude({:next, :weak, _}, _state, _env), do: true
+  def conclude({:next, :strong, _}, _state, _env), do: false
 
-  def conclude({:until, strength, _, _}), do: conclude_strength(strength)
+  def conclude({:expr, {eval, _src}}, state, env), do: eval.(state, env)
 
-  def conclude({:not, p}), do: {:not, conclude(p)}
-  def conclude({:and, p, q}), do: {:and, conclude(p), conclude(q)}
-  def conclude({:or, p, q}), do: {:or, conclude(p), conclude(q)}
-  def conclude({:implies, p, q}), do: {:implies, conclude(p), conclude(q)}
+  def conclude({:let, binders, p}, state, env) do
+    {binders, env} = eval_binders(binders, state, env)
+    {:let, binders, conclude(p, env)}
+  end
 
-  def conclude({:let, binders, p}), do: {:let, binders, conclude(p)}
+  def conclude({:not, p}, state, env) do
+    {:not, conclude(p, state, env)}
+  end
 
-  def conclude(p), do: p
+  def conclude({:and, p, q}, state, env) do
+    {:and, conclude(p, state, env), conclude(q, state, env)}
+  end
 
-  defp conclude_strength(:weak), do: true
-  defp conclude_strength(:strong), do: false
+  def conclude({:or, p, q}, state, env) do
+    {:or, conclude(p, state, env), conclude(q, state, env)}
+  end
+
+  def conclude({:implies, p, q}, state, env) do
+    {:implies, conclude(p, state, env), conclude(q, state, env)}
+  end
 
   @spec eval_binders(list(Syntax.binder()), state, env) :: {list(Syntax.binder()), env}
   defp eval_binders(binders, state, outer_env) do

@@ -211,7 +211,7 @@ defmodule QuickLTL do
       def reduce(%{list: []}, {:cont, acc}, _fun), do: {:done, acc}
 
       def reduce(%{list: [_ | tail] = list}, {:cont, acc}, fun),
-        do: reduce(tail, fun.(list, acc), fun)
+        do: reduce(%{list: tail}, fun.(list, acc), fun)
     end
   end
 

@@ -12,7 +12,7 @@ defmodule QuickLTL.Syntax do
 
   @type t ::
           boolean()
-          | atomic
+          | {:expr, native_expr(boolean())}
           | {:let, Keyword.t(binder), t}
           | {:not, t}
           | {:and, t, t}
@@ -22,12 +22,6 @@ defmodule QuickLTL.Syntax do
           | {:always, t}
           | {:eventually, t}
           | {:until, :weak | :strong, t, t}
-
-  @typedoc """
-  An atomic proposition.
-  Must correspond to an Elixir expression that evaluates to a boolean.
-  """
-  @type atomic :: {:expr, native_expr(boolean())}
 
   @typedoc """
   Embedding of a native Elixir expression into the QuickLTL syntax.
@@ -44,13 +38,74 @@ defmodule QuickLTL.Syntax do
   """
   @type guarded ::
           boolean()
-          | atomic
+          | {:expr, native_expr(boolean)}
           | {:let, Keyword.t(binder), guarded}
           | {:not, guarded}
           | {:and, guarded, guarded}
           | {:or, guarded, guarded}
           | {:implies, guarded, guarded}
           | {:next, :weak | :strong, t}
+
+  @spec proposition_to_quoted(t) :: Macro.output()
+  def proposition_to_quoted(true), do: true
+  def proposition_to_quoted(false), do: false
+
+  def proposition_to_quoted({:expr, {_fun, src}}), do: src
+
+  def proposition_to_quoted({:let, binders, p}) do
+    quote do
+      let unquote(binders |> Enum.map(&binder_to_quoted/1)) do
+        unquote(proposition_to_quoted(p))
+      end
+    end
+  end
+
+  def proposition_to_quoted({:not, p}) do
+    quote do: not unquote(proposition_to_quoted(p))
+  end
+
+  def proposition_to_quoted({:and, p1, p2}) do
+    quote do: unquote(proposition_to_quoted(p1)) and unquote(proposition_to_quoted(p2))
+  end
+
+  def proposition_to_quoted({:or, p1, p2}) do
+    quote do: unquote(proposition_to_quoted(p1)) or unquote(proposition_to_quoted(p2))
+  end
+
+  def proposition_to_quoted({:implies, p1, p2}) do
+    quote do
+      if unquote(proposition_to_quoted(p1)), do: unquote(proposition_to_quoted(p2))
+    end
+  end
+
+  def proposition_to_quoted({:next, strength, p}) do
+    operator = :"next_#{strength}"
+    quote do: unquote(operator)(unquote(proposition_to_quoted(p)))
+  end
+
+  def proposition_to_quoted({operator, p}) when operator in [:always, :eventually] do
+    quote do: unquote(operator)(unquote(proposition_to_quoted(p)))
+  end
+
+  def proposition_to_quoted({:until, strength, p1, p2}) do
+    operator = :"until_#{strength}"
+
+    quote do
+      unquote(operator)(
+        unquote(proposition_to_quoted(p1)),
+        unquote(proposition_to_quoted(p2))
+      )
+    end
+  end
+
+  defp binder_to_quoted({name, {:expr, {_fun, src}}}) do
+    {name, src}
+  end
+
+  defp binder_to_quoted({name, {:val, x}}) do
+    val = quote do: &{:val, unquote(Macro.escape(x))}
+    {name, val}
+  end
 
   @spec compile_proposition(Macro.input(), Macro.Env.t()) :: Macro.output()
   @doc """

@@ -90,12 +90,20 @@ defmodule GenServerLTL do
     step_properties(initial_state, &QuickLTL.step/2)
   end
 
+  def step_execution({:info, :timeout} = event, state) do
+    if state.expects_timeout? do
+      state |> step_server(event) |> step_properties(&QuickLTL.step/2)
+    else
+      state
+    end
+  end
+
   def step_execution(event, state) do
-    step_properties(step_server(event, state), &QuickLTL.step/2)
+    state |> step_server(event) |> step_properties(&QuickLTL.step/2)
   end
 
   def conclude_execution(final_event, state) do
-    final_state = step_properties(step_server(final_event, state), &QuickLTL.conclude/2)
+    final_state = state |> step_server(final_event) |> inject_final_timeouts()
 
     unless Enum.empty?(final_state.properties) do
       raise ViolatedProperty,
@@ -108,7 +116,18 @@ defmodule GenServerLTL do
     final_state
   end
 
-  defp step_server(event, state) do
+  defp inject_final_timeouts(state) do
+    if state.expects_timeout? do
+      state
+      |> step_properties(&QuickLTL.step/2)
+      |> step_server({:info, :timeout})
+      |> inject_final_timeouts()
+    else
+      state |> step_properties(&QuickLTL.conclude/2)
+    end
+  end
+
+  defp step_server(state, event) do
     # TODO: expose a {:reply, reply} as a logical variable
     # TODO: support {:continue, continue} as part of the response
     new_state =

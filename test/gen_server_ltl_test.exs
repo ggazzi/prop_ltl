@@ -17,17 +17,15 @@ defmodule GenServerLTLTest do
       end
     end
 
-    alias DummyServer_init_execution, as: DummyServer
-
     test "calls the GenServer's init with the appropriate argument" do
       ref = make_ref()
-      state = init_execution(DummyServer, ref, [])
+      state = init_execution(DummyServer_init_execution, ref, [])
 
       assert state.server_state == %{init_arg: ref}
     end
 
     test "starts with status = :running, empty trace and not expecting a timeout" do
-      state = init_execution(DummyServer, self(), [])
+      state = init_execution(DummyServer_init_execution, self(), [])
 
       assert state.status == :running
       assert Enum.empty?(state.trace_rev)
@@ -37,7 +35,7 @@ defmodule GenServerLTLTest do
     test "steps and simplifies all properties with the initial state" do
       state =
         init_execution(
-          DummyServer,
+          DummyServer_init_execution,
           false,
           properties do
             property "very simple",
@@ -74,7 +72,7 @@ defmodule GenServerLTLTest do
 
       state =
         init_execution(
-          DummyServer,
+          DummyServer_init_execution,
           ref,
           properties do
             property "initial condition", state.init_arg == ref
@@ -91,7 +89,7 @@ defmodule GenServerLTLTest do
 
       assert_raise GenServerLTL.ViolatedProperty, ~r/fails immediately/, fn ->
         init_execution(
-          DummyServer,
+          DummyServer_init_execution,
           ref,
           properties do
             invariant "fails immediately", state.init_arg != ref
@@ -136,6 +134,10 @@ defmodule GenServerLTLTest do
       end
 
       @impl true
+      def handle_info(:timeout, _state) do
+        {:noreply, {:info, :timeout}}
+      end
+
       def handle_info(event, _state) do
         new_state = {:info, event[:payload]}
 
@@ -147,14 +149,8 @@ defmodule GenServerLTLTest do
       end
     end
 
-    alias DummyServer_step_execution, as: DummyServer
-
-    def timeout do
-      unshrinkable(one_of([nil, positive_integer(), :infinity, :hibernate]))
-    end
-
     test "dispatches the event to the right handler" do
-      state_before = init_execution(DummyServer, nil, [])
+      state_before = init_execution(DummyServer_step_execution, nil, [])
 
       check all(kind <- one_of([:cast, :info, :call]), payload <- binary()) do
         state_after = step_execution({kind, %{payload: payload}}, state_before)
@@ -163,7 +159,7 @@ defmodule GenServerLTLTest do
     end
 
     test "adjusts the trace and expectations of timeout appropriately" do
-      state_before = init_execution(DummyServer, nil, [])
+      state_before = init_execution(DummyServer_step_execution, nil, [])
 
       check all(
               kind <- one_of([:cast, :info, :call]),
@@ -191,8 +187,34 @@ defmodule GenServerLTLTest do
       end
     end
 
+    test "ignores an {:info, :timeout} if no timeout is expected" do
+      state_before = init_execution(DummyServer_step_execution, nil, [])
+
+      check all(trace_before <- list_of(binary())) do
+        state_before = %{state_before | trace_rev: trace_before, expects_timeout?: false}
+
+        state_after = step_execution({:info, :timeout}, state_before)
+        assert state_before == state_after
+      end
+    end
+
+    test "doesn't ignore an {:info, :timeout} if a timeout is expected" do
+      state_before = init_execution(DummyServer_step_execution, nil, [])
+
+      check all(trace_before <- list_of(binary())) do
+        state_before = %{state_before | trace_rev: trace_before, expects_timeout?: true}
+
+        event = {:info, :timeout}
+        state_after = step_execution(event, state_before)
+
+        assert state_after.trace_rev == [event | trace_before]
+        assert state_after.server_state == event
+        refute state_after.expects_timeout?
+      end
+    end
+
     test "raises an exception if the server stops" do
-      state_before = init_execution(DummyServer, nil, [])
+      state_before = init_execution(DummyServer_step_execution, nil, [])
 
       check all(
               kind <- one_of([:cast, :info, :call]),
@@ -210,7 +232,7 @@ defmodule GenServerLTLTest do
     test "steps the evaluation of the properties" do
       state_0 =
         init_execution(
-          DummyServer,
+          DummyServer_step_execution,
           0,
           properties do
             property "succeeds in two", next_weak(next_weak state == 2)
@@ -232,7 +254,7 @@ defmodule GenServerLTLTest do
       for kind <- [:cast, :info, :call] do
         state_0 =
           init_execution(
-            DummyServer,
+            DummyServer_step_execution,
             0,
             properties do
               property "succeeds in two",
@@ -257,7 +279,7 @@ defmodule GenServerLTLTest do
       for kind <- [:cast, :info, :call] do
         state_0 =
           init_execution(
-            DummyServer,
+            DummyServer_step_execution,
             0,
             properties do
               property "fails in two" do
@@ -282,19 +304,19 @@ defmodule GenServerLTLTest do
   end
 
   describe "conclude_execution/1" do
-    defmodule DummyServer_step_execution do
+    defmodule DummyServer_conclude_execution do
       use GenServer
 
       @impl true
-      def init(state) do
-        {:ok, state}
+      def init(value) do
+        {:ok, %{value: value, timeout_stack: []}}
       end
 
       @impl true
-      def handle_call(event, _from, _state) do
-        new_state = {:call, event[:payload]}
+      def handle_call(event, _from, state) do
+        {new_state, current_timeout} = update_state(state, :call, event)
 
-        case {event[:stop], event[:reply], event[:timeout]} do
+        case {event[:stop], event[:reply], current_timeout} do
           {nil, nil, nil} -> {:noreply, new_state}
           {nil, nil, timeout} -> {:noreply, new_state, timeout}
           {nil, reply, nil} -> {:reply, reply, new_state}
@@ -305,10 +327,10 @@ defmodule GenServerLTLTest do
       end
 
       @impl true
-      def handle_cast(event, _state) do
-        new_state = {:cast, event[:payload]}
+      def handle_cast(event, state) do
+        {new_state, current_timeout} = update_state(state, :cast, event)
 
-        case {event[:stop], event[:timeout]} do
+        case {event[:stop], current_timeout} do
           {nil, nil} -> {:noreply, new_state}
           {nil, timeout} -> {:noreply, new_state, timeout}
           {reason, _} -> {:stop, reason, new_state}
@@ -316,40 +338,81 @@ defmodule GenServerLTLTest do
       end
 
       @impl true
-      def handle_info(event, _state) do
-        new_state = {:info, event[:payload]}
+      def handle_info(:timeout, state) do
+        {new_state, current_timeout} = update_state(state, :info, %{payload: :timeout})
 
-        case {event[:stop], event[:timeout]} do
+        case current_timeout do
+          nil -> {:noreply, new_state}
+          timeout -> {:noreply, new_state, timeout}
+        end
+      end
+
+      def handle_info(event, state) do
+        {new_state, current_timeout} = update_state(state, :info, event)
+
+        case {event[:stop], current_timeout} do
           {nil, nil} -> {:noreply, new_state}
           {nil, timeout} -> {:noreply, new_state, timeout}
           {reason, _} -> {:stop, reason, new_state}
         end
       end
-    end
 
-    alias DummyServer_step_execution, as: DummyServer
+      defp update_state(state, kind, event) do
+        {current_timeout, timeout_stack} =
+          case {event[:timeout], state.timeout_stack} do
+            {nil, []} -> {nil, []}
+            {nil, [timeout | stack]} -> {timeout, stack}
+            {timeout, stack} when is_integer(timeout) -> {timeout, stack}
+            {[], []} -> {nil, []}
+            {[], [timeout | stack]} -> {timeout, stack}
+            {[timeout | added], stack} -> {timeout, added ++ stack}
+          end
 
-    def timeout do
-      unshrinkable(one_of([nil, positive_integer(), :infinity, :hibernate]))
-    end
-
-    test "dispatches the last event to the right handler" do
-      state_before = init_execution(DummyServer, nil, [])
-
-      check all(kind <- one_of([:cast, :info, :call]), payload <- binary()) do
-        final_state = conclude_execution({kind, %{payload: payload}}, state_before)
-        assert final_state.server_state == {kind, payload}
+        new_state = %{state | value: {kind, event[:payload]}, timeout_stack: timeout_stack}
+        {new_state, current_timeout}
       end
     end
 
-    test "adjusts the trace and expectations of timeout appropriately" do
-      state_before = init_execution(DummyServer, nil, [])
+    test "dispatches the last event to the right handler" do
+      state_before = init_execution(DummyServer_conclude_execution, nil, [])
+
+      check all(kind <- one_of([:cast, :info, :call]), payload <- binary()) do
+        final_state = conclude_execution({kind, %{payload: payload}}, state_before)
+        assert final_state.server_state.value == {kind, payload}
+      end
+    end
+
+    test "adjusts the trace appropriately when no timeout is expected at the end" do
+      state_before = init_execution(DummyServer_conclude_execution, nil, [])
 
       check all(
               kind <- one_of([:cast, :info, :call]),
               payload <- binary(),
-              timeout <- timeout(),
               trace_before = list_of(binary()),
+              expected_timeout_before <- boolean()
+            ) do
+        state_before = %{
+          state_before
+          | trace_rev: trace_before,
+            expects_timeout?: expected_timeout_before
+        }
+
+        event = {kind, %{payload: payload, timeout: nil}}
+        final_state = conclude_execution(event, state_before)
+
+        assert final_state.trace_rev == [event | trace_before]
+        refute final_state.expects_timeout?
+      end
+    end
+
+    test "injects a timeout event if one is still expected at the end" do
+      state_before = init_execution(DummyServer_conclude_execution, nil, [])
+
+      check all(
+              kind <- one_of([:cast, :info, :call]),
+              payload <- binary(),
+              timeout <- positive_integer(),
+              trace_before <- list_of(binary()),
               expected_timeout_before <- boolean()
             ) do
         state_before = %{
@@ -361,18 +424,38 @@ defmodule GenServerLTLTest do
         event = {kind, %{payload: payload, timeout: timeout}}
         final_state = conclude_execution(event, state_before)
 
-        assert final_state.trace_rev == [event | trace_before]
+        assert final_state.trace_rev == [{:info, :timeout}, event | trace_before]
+        refute final_state.expects_timeout?
+      end
+    end
 
-        if timeout in [nil, :infinity, :hibernate] do
-          refute final_state.expects_timeout?
-        else
-          assert final_state.expects_timeout?
-        end
+    test "injects multiple timeout events while they are still expected at the end" do
+      state_before = init_execution(DummyServer_conclude_execution, nil, [])
+
+      check all(
+              kind <- one_of([:cast, :info, :call]),
+              payload <- binary(),
+              timeouts <- nonempty(list_of(positive_integer())),
+              trace_before <- list_of(binary()),
+              expected_timeout_before <- boolean()
+            ) do
+        state_before = %{
+          state_before
+          | trace_rev: trace_before,
+            expects_timeout?: expected_timeout_before
+        }
+
+        event = {kind, %{payload: payload, timeout: timeouts}}
+        final_state = conclude_execution(event, state_before)
+
+        trace_suffix = for _ <- timeouts, do: {:info, :timeout}
+        assert final_state.trace_rev == trace_suffix ++ [event | trace_before]
+        refute final_state.expects_timeout?
       end
     end
 
     test "raises an exception if the server stops" do
-      state_before = init_execution(DummyServer, nil, [])
+      state_before = init_execution(DummyServer_conclude_execution, nil, [])
 
       check all(
               kind <- one_of([:cast, :info, :call]),
@@ -391,10 +474,10 @@ defmodule GenServerLTLTest do
       for kind <- [:cast, :info, :call] do
         state_0 =
           init_execution(
-            DummyServer,
+            DummyServer_conclude_execution,
             0,
             properties do
-              property "succeeds at the end", eventually(state == {kind, 2})
+              property "succeeds at the end", eventually(state.value == {kind, 2})
             end
           )
 
@@ -412,10 +495,10 @@ defmodule GenServerLTLTest do
       for kind <- [:cast, :info, :call] do
         state_0 =
           init_execution(
-            DummyServer,
+            DummyServer_conclude_execution,
             0,
             properties do
-              invariant "fails at the end", state != {kind, 2}
+              invariant "fails at the end", state.value != {kind, 2}
             end
           )
 
@@ -429,11 +512,11 @@ defmodule GenServerLTLTest do
       for kind <- [:cast, :info, :call] do
         state_0 =
           init_execution(
-            DummyServer,
+            DummyServer_conclude_execution,
             0,
             properties do
               property "does not succeed at the end",
-                       eventually(state == {kind, 2})
+                       eventually(state.value == {kind, 2})
             end
           )
 
@@ -442,6 +525,10 @@ defmodule GenServerLTLTest do
         end
       end
     end
+  end
+
+  defp timeout do
+    unshrinkable(one_of([nil, positive_integer(), :infinity, :hibernate]))
   end
 
   defp find_prop(name, %{properties: properties} = _state) do

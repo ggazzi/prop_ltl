@@ -194,14 +194,6 @@ defmodule QuickLTL.Syntax do
     ast
   end
 
-  def compile_proposition({:let, _, [{:=, _, [{name, _, context}, expr]}]}, macro_env)
-      when is_atom(name) and is_atom(context) do
-    quote do
-      # TODO: remove
-      {:let, unquote(compile_binders([{name, expr}], macro_env)), :illegal}
-    end
-  end
-
   def compile_proposition({:let, _, [binders, [do: expr]]}, macro_env) do
     quote do
       {:let, unquote(compile_binders(binders, macro_env)),

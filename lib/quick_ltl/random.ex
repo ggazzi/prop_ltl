@@ -4,8 +4,6 @@ defmodule QuickLTL.Random do
   def proposition(vars) do
     atom = map(native_expr_boolean(vars), &{:expr, &1})
 
-    # TODO: generate propositions that actually extend the scope with let
-
     ast =
       tree(atom, fn child_gen ->
         variants = [

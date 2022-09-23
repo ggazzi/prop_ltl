@@ -8,10 +8,27 @@ defmodule OnOffTest do
   doctest OnOff
 
   property "satisfies the LTL specification" do
-    event = one_of([{:cast, :toggle}, {:cast, {:set, boolean()}}])
+    event =
+      one_of([
+        constant(
+          {:cast, :toggle,
+           prop do
+             let prev: state, do: next_strong(state.on? == not prev.on?)
+           end}
+        ),
+        gen all(on? <- boolean()) do
+          {:cast, {:set, on?}, prop(next_strong state.on? == on?)}
+        end
+      ])
+
+    timeout = constant({:info, :timeout})
 
     trace =
-      gen(all(prefix <- list_of(one_of([event, {:info, :timeout}])), last <- event),
+      gen(
+        all(
+          prefix <- list_of(one_of([event, timeout])),
+          last <- event
+        ),
         do: prefix ++ [last]
       )
 

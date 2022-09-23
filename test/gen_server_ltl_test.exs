@@ -149,11 +149,17 @@ defmodule GenServerLTLTest do
       end
     end
 
+    @trivial_contract prop(true)
+
     test "dispatches the event to the right handler" do
       state_before = init_execution(DummyServer_step_execution, nil, [])
 
-      check all(kind <- one_of([:cast, :info, :call]), payload <- binary()) do
+      check all(kind <- one_of([:cast, :info, :call]), payload <- atom(:alphanumeric)) do
         state_after = step_execution({kind, %{payload: payload}}, state_before)
+        assert state_after.server_state == {kind, payload}
+
+        # Also works with a contract
+        state_after = step_execution({kind, %{payload: payload}, @trivial_contract}, state_before)
         assert state_after.server_state == {kind, payload}
       end
     end
@@ -163,9 +169,9 @@ defmodule GenServerLTLTest do
 
       check all(
               kind <- one_of([:cast, :info, :call]),
-              payload <- binary(),
+              payload <- atom(:alphanumeric),
               timeout <- timeout(),
-              trace_before = list_of(binary()),
+              trace_before <- list_of(atom(:alphanumeric)),
               expected_timeout_before <- boolean()
             ) do
         state_before = %{
@@ -184,13 +190,26 @@ defmodule GenServerLTLTest do
         else
           assert state_after.expects_timeout?
         end
+
+        # Also works with a contract
+        event_spec = {kind, %{payload: payload, timeout: timeout}, @trivial_contract}
+        state_after = step_execution(event_spec, state_before)
+
+        # Note: contract is NOT saved to the trace
+        assert state_after.trace_rev == [event | trace_before]
+
+        if timeout in [nil, :infinity, :hibernate] do
+          refute state_after.expects_timeout?
+        else
+          assert state_after.expects_timeout?
+        end
       end
     end
 
     test "ignores an {:info, :timeout} if no timeout is expected" do
       state_before = init_execution(DummyServer_step_execution, nil, [])
 
-      check all(trace_before <- list_of(binary())) do
+      check all(trace_before <- list_of(atom(:alphanumeric))) do
         state_before = %{state_before | trace_rev: trace_before, expects_timeout?: false}
 
         state_after = step_execution({:info, :timeout}, state_before)
@@ -201,7 +220,7 @@ defmodule GenServerLTLTest do
     test "doesn't ignore an {:info, :timeout} if a timeout is expected" do
       state_before = init_execution(DummyServer_step_execution, nil, [])
 
-      check all(trace_before <- list_of(binary())) do
+      check all(trace_before <- list_of(atom(:alphanumeric))) do
         state_before = %{state_before | trace_rev: trace_before, expects_timeout?: true}
 
         event = {:info, :timeout}
@@ -218,7 +237,7 @@ defmodule GenServerLTLTest do
 
       check all(
               kind <- one_of([:cast, :info, :call]),
-              payload <- binary(),
+              payload <- atom(:alphanumeric),
               reason <- string(:alphanumeric)
             ) do
         event = {kind, %{payload: payload, stop: reason}}
@@ -301,6 +320,34 @@ defmodule GenServerLTLTest do
         end
       end
     end
+
+    test "adds the event contract to the system properties before stepping" do
+      state_before = init_execution(DummyServer_step_execution, nil, [])
+
+      check all(
+              kind <- one_of([:cast, :info, :call]),
+              payload <- atom(:alphanumeric),
+              trace_before <- list_of(atom(:alphanumeric)),
+              expects_timeout? <- boolean()
+            ) do
+        contract =
+          prop do
+            next_strong(state == {kind, payload} and next_strong(state != {kind, payload}))
+          end
+
+        state_before = %{
+          state_before
+          | expects_timeout?: expects_timeout?,
+            trace_rev: trace_before
+        }
+
+        event = %{payload: payload}
+        state_after = step_execution({kind, event, contract}, state_before)
+        descr = ~r/#{kind}@#{length(trace_before)}:/
+
+        assert match?(prop(&{:expr, _}), find_prop(descr, state_after))
+      end
+    end
   end
 
   describe "conclude_execution/1" do
@@ -376,7 +423,7 @@ defmodule GenServerLTLTest do
     test "dispatches the last event to the right handler" do
       state_before = init_execution(DummyServer_conclude_execution, nil, [])
 
-      check all(kind <- one_of([:cast, :info, :call]), payload <- binary()) do
+      check all(kind <- one_of([:cast, :info, :call]), payload <- atom(:alphanumeric)) do
         final_state = conclude_execution({kind, %{payload: payload}}, state_before)
         assert final_state.server_state.value == {kind, payload}
       end
@@ -387,8 +434,8 @@ defmodule GenServerLTLTest do
 
       check all(
               kind <- one_of([:cast, :info, :call]),
-              payload <- binary(),
-              trace_before = list_of(binary()),
+              payload <- atom(:alphanumeric),
+              trace_before = list_of(atom(:alphanumeric)),
               expected_timeout_before <- boolean()
             ) do
         state_before = %{
@@ -410,9 +457,9 @@ defmodule GenServerLTLTest do
 
       check all(
               kind <- one_of([:cast, :info, :call]),
-              payload <- binary(),
+              payload <- atom(:alphanumeric),
               timeout <- positive_integer(),
-              trace_before <- list_of(binary()),
+              trace_before <- list_of(atom(:alphanumeric)),
               expected_timeout_before <- boolean()
             ) do
         state_before = %{
@@ -434,9 +481,9 @@ defmodule GenServerLTLTest do
 
       check all(
               kind <- one_of([:cast, :info, :call]),
-              payload <- binary(),
+              payload <- atom(:alphanumeric),
               timeouts <- nonempty(list_of(positive_integer())),
-              trace_before <- list_of(binary()),
+              trace_before <- list_of(atom(:alphanumeric)),
               expected_timeout_before <- boolean()
             ) do
         state_before = %{
@@ -459,7 +506,7 @@ defmodule GenServerLTLTest do
 
       check all(
               kind <- one_of([:cast, :info, :call]),
-              payload <- binary(),
+              payload <- atom(:alphanumeric),
               reason <- string(:alphanumeric)
             ) do
         event = {kind, %{payload: payload, stop: reason}}
@@ -532,7 +579,14 @@ defmodule GenServerLTLTest do
   end
 
   defp find_prop(name, %{properties: properties} = _state) do
-    case Enum.find(properties, &match?({^name, _}, &1)) do
+    matcher =
+      if is_binary(name) do
+        &match?({^name, _}, &1)
+      else
+        fn {item, _} -> Regex.match?(name, item) end
+      end
+
+    case Enum.find(properties, matcher) do
       {_, property} -> property
       nil -> nil
     end

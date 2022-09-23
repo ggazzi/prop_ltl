@@ -127,7 +127,32 @@ defmodule GenServerLTL do
     end
   end
 
-  defp step_server(state, event) do
+  defp step_server(state, event_spec) do
+    {event, state} =
+      case event_spec do
+        {_kind, _payload} ->
+          {event_spec, state}
+
+        {kind, payload, contract} ->
+          descr = "#{kind}@#{length(state.trace_rev)}: #{inspect(payload)}"
+
+          # Contract is evaluated at the state _before_ handling the event
+          contract =
+            contract
+            |> QuickLTL.unfold()
+            |> QuickLTL.step(%{state: state.server_state})
+            |> QuickLTL.simplify()
+
+          state =
+            if contract.ast == true do
+              state
+            else
+              %{state | properties: [{descr, contract} | state.properties]}
+            end
+
+          {{kind, payload}, state}
+      end
+
     # TODO: expose a {:reply, reply} as a logical variable
     # TODO: support {:continue, continue} as part of the response
     new_state =

@@ -40,19 +40,16 @@ defmodule GenServerLTLTest do
           DummyServer,
           false,
           properties do
-            property "very simple" do
-              next_weak(state.init_arg and true) or false
-            end
+            property "very simple",
+                     next_weak(state.init_arg and true) or false
 
             property "eventually" do
               if not state.init_arg do
-                eventually(state.init_arg)
+                eventually state.init_arg
               end
             end
 
-            invariant "invariant" do
-              not state.init_arg
-            end
+            invariant "invariant", not state.init_arg
           end
         )
 
@@ -62,12 +59,12 @@ defmodule GenServerLTLTest do
              )
 
       assert match?(
-               prop(always(not _)),
+               prop(always not _),
                find_prop("invariant", state)
              )
 
       assert match?(
-               prop(eventually(_)),
+               prop(eventually _),
                find_prop("eventually", state)
              )
     end
@@ -80,18 +77,13 @@ defmodule GenServerLTLTest do
           DummyServer,
           ref,
           properties do
-            property "initial condition" do
-              state.init_arg == ref
-            end
-
-            invariant "doesn't change" do
-              state.init_arg == ref
-            end
+            property "initial condition", state.init_arg == ref
+            invariant "doesn't change", state.init_arg == ref
           end
         )
 
       assert find_prop("initial_condition", state) == nil
-      assert match?(prop(always(&{:expr, _})), find_prop("doesn't change", state))
+      assert match?(prop(always &{:expr, _}), find_prop("doesn't change", state))
     end
 
     test "raises an exception if any property has been violated" do
@@ -102,9 +94,7 @@ defmodule GenServerLTLTest do
           DummyServer,
           ref,
           properties do
-            invariant "fails immediately" do
-              state.init_arg != ref
-            end
+            invariant "fails immediately", state.init_arg != ref
           end
         )
       end
@@ -223,14 +213,12 @@ defmodule GenServerLTLTest do
           DummyServer,
           0,
           properties do
-            property "succeeds in two" do
-              next_weak(next_weak(state == 2))
-            end
+            property "succeeds in two", next_weak(next_weak state == 2)
           end
         )
 
       assert match?(
-               prop(next_weak(&{:expr, _})),
+               prop(next_weak &{:expr, _}),
                find_prop("succeeds in two", state_0)
              )
 
@@ -247,14 +235,13 @@ defmodule GenServerLTLTest do
             DummyServer,
             0,
             properties do
-              property "succeeds in two" do
-                next_weak(next_weak(state == {kind, 2}))
-              end
+              property "succeeds in two",
+                       next_weak(next_weak(state == {kind, 2}))
             end
           )
 
         assert match?(
-                 prop(next_weak(&{:expr, _})),
+                 prop(next_weak &{:expr, _}),
                  find_prop("succeeds in two", state_0)
                )
 
@@ -274,13 +261,13 @@ defmodule GenServerLTLTest do
             0,
             properties do
               property "fails in two" do
-                next_weak(next_weak(state != {kind, 2}))
+                next_weak(next_weak state != {kind, 2})
               end
             end
           )
 
         assert match?(
-                 prop(next_weak(&{:expr, _})),
+                 prop(next_weak &{:expr, _}),
                  find_prop("fails in two", state_0)
                )
 
@@ -407,14 +394,12 @@ defmodule GenServerLTLTest do
             DummyServer,
             0,
             properties do
-              property "succeeds at the end" do
-                eventually(state == {kind, 2})
-              end
+              property "succeeds at the end", eventually(state == {kind, 2})
             end
           )
 
         assert match?(
-                 prop(eventually(&{:expr, _})),
+                 prop(eventually &{:expr, _}),
                  find_prop("succeeds at the end", state_0)
                )
 
@@ -430,9 +415,7 @@ defmodule GenServerLTLTest do
             DummyServer,
             0,
             properties do
-              invariant "fails at the end" do
-                state != {kind, 2}
-              end
+              invariant "fails at the end", state != {kind, 2}
             end
           )
 
@@ -449,9 +432,8 @@ defmodule GenServerLTLTest do
             DummyServer,
             0,
             properties do
-              property "does not succeed at the end" do
-                eventually(state == {kind, 2})
-              end
+              property "does not succeed at the end",
+                       eventually(state == {kind, 2})
             end
           )
 

@@ -36,7 +36,7 @@ defmodule GenServerLTL do
     compile_properties(props, __CALLER__)
   end
 
-  def compile_properties({kind, _, [_name, [do: _proposition]]} = decl, caller)
+  def compile_properties({kind, _, [_name, _proposition]} = decl, caller)
       when kind in [:property, :invariant] do
     quote do: [unquote(compile_property(decl, caller))]
   end
@@ -46,12 +46,12 @@ defmodule GenServerLTL do
     quote do: [unquote_splicing(properties)]
   end
 
-  defp compile_property({:property, _, [name, [do: proposition]]}, caller) do
+  defp compile_property({:property, _, [name, proposition]}, caller) do
     compiled = QuickLTL.Syntax.compile_proposition(proposition, caller)
     quote do: {unquote(name), %QuickLTL{ast: unquote(compiled)}}
   end
 
-  defp compile_property({:invariant, _, [name, [do: proposition]]}, caller) do
+  defp compile_property({:invariant, _, [name, proposition]}, caller) do
     compiled =
       QuickLTL.Syntax.compile_proposition(
         quote do

@@ -232,7 +232,7 @@ defmodule QuickLTL.Syntax do
   on top of the usual Elixir variable scope.  That is, any free variables
   of the expression should be looked up at evaluation time.
   """
-  defp compile_native_expr(expr, macro_env) do
+  def compile_native_expr(expr, macro_env) do
     expr = Macro.expand(expr, macro_env)
 
     evaluator =
@@ -249,7 +249,7 @@ defmodule QuickLTL.Syntax do
             quote do
               unquote(var) =
                 Map.get_lazy(unquote(env_var), unquote(name), fn ->
-                  Map.get(unquote(state_var), unquote(name))
+                  Map.fetch!(unquote(state_var), unquote(name))
                 end)
             end
           end

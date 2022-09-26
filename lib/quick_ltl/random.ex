@@ -1,5 +1,6 @@
 defmodule QuickLTL.Random do
   import StreamData
+  alias QuickLTL.Syntax
 
   def proposition(vars) do
     atom = map(native_expr_boolean(vars), &{:expr, &1})
@@ -22,7 +23,14 @@ defmodule QuickLTL.Random do
             variants
           else
             binder = {member_of(vars), {:expr, native_expr_boolean(vars)}}
-            [{:let, nonempty(list_of(binder)), child_gen} | variants]
+
+            [
+              {:let, nonempty(list_of(binder)), child_gen},
+              {:recv, native_recv(vars)},
+              {:recv, native_recv(vars), child_gen},
+              {:if_recv, native_recv(vars), child_gen}
+              | variants
+            ]
           end
         )
       end)
@@ -32,6 +40,16 @@ defmodule QuickLTL.Random do
 
   def state(vars) do
     map(fixed_list(for var <- vars, do: map(boolean(), &{var, &1})), &Map.new/1)
+  end
+
+  def native_recv(vars) do
+    var = map(member_of(vars), &Macro.var(&1, __MODULE__))
+    pattern = one_of([var, map(var, &quote(do: ^unquote(&1)))])
+
+    map(pattern, fn quoted ->
+      recv = Syntax.compile_native_recv(quoted, make_custom_env())
+      Code.eval_quoted(recv) |> elem(0)
+    end)
   end
 
   def native_expr_boolean(vars) do
@@ -51,5 +69,9 @@ defmodule QuickLTL.Random do
         end)
       ])
     end
+  end
+
+  def make_custom_env do
+    __ENV__
   end
 end

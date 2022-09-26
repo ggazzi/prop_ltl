@@ -35,6 +35,19 @@ defmodule QuickLTL do
     end
   end
 
+  # FIXME: make the "recv"-expressions have no side effects
+  #
+  # Having side effects makes the whole language super unwieldy and
+  # throws away a lot of nice properties from a pure logical foundation.
+  #
+  # In a very practical sense, it doesn't let one define multiple properties
+  # involving the same event.
+  #
+  # Making "recv" side-effect free will require changes to the semantics.
+  # In this case, every state in an execution trace must be accompanied by
+  # a set of messages that were received by the test process since the last
+  # event was sent to the module under test.
+
   @doc """
   Macro for writing temporal propositions with Elixir-like syntax.
 
@@ -81,6 +94,24 @@ defmodule QuickLTL do
       ...>     }
       ...>   }} when is_function(fn1) and is_function(fn2) and is_function(fn3),
       ...>   p)
+      true
+
+      iex> p = prop do false or recv({:error, _cause}) end
+      ...> match?(%QuickLTL{ast:
+      ...>   {:or, false,
+      ...>     {:recv, {fn1, _}}
+      ...>   }
+      ...> } when is_function(fn1),
+      ...> p)
+      true
+
+      iex> p = prop do
+      ...>   recv({:ok, result}) do result > 5 end
+      ...> end
+      iex> match?(%QuickLTL{ast:
+      ...>   {:recv, {fn1, _}, {:expr, {fn2, _}}}
+      ...> } when is_function(fn1) and is_function(fn2),
+      ...> p)
       true
 
       This macro can also be used as part of a pattern.
@@ -166,6 +197,35 @@ defmodule QuickLTL do
   def evaluate_naive({:let, binders, p}, [state | _] = trace, outer_env) do
     {_, inner_env} = eval_binders(binders, state, outer_env)
     evaluate_naive(p, trace, inner_env)
+  end
+
+  def evaluate_naive({:recv, {eval, _src}}, [state | _], env) do
+    case eval.(state, env) do
+      {:received, _captures} -> true
+      :not_received -> false
+    end
+  end
+
+  def evaluate_naive({:recv, {eval, _src}, p}, [state | _] = trace, env) do
+    case eval.(state, env) do
+      {:received, captures} ->
+        binders = for {var, value} <- captures, do: {var, {:val, value}}
+        evaluate_naive({:let, binders, p}, trace, env)
+
+      :not_received ->
+        false
+    end
+  end
+
+  def evaluate_naive({:if_recv, {eval, _src}, p}, [state | _] = trace, env) do
+    case eval.(state, env) do
+      {:received, captures} ->
+        binders = for {var, value} <- captures, do: {var, {:val, value}}
+        evaluate_naive({:let, binders, p}, trace, env)
+
+      :not_received ->
+        true
+    end
   end
 
   def evaluate_naive({:not, p}, trace, env), do: not evaluate_naive(p, trace, env)
@@ -283,6 +343,9 @@ defmodule QuickLTL do
       iex> simplify prop(let x: state.x + 1, do: true)
       prop true
 
+      iex> simplify prop(recv(x) do false end)
+      prop false
+
   This works even for propositions containing temporal operators!
 
       iex> simplify prop(
@@ -344,6 +407,21 @@ defmodule QuickLTL do
       true -> true
       false -> false
       other -> {:let, binders, other}
+    end
+  end
+
+  def simplify({:recv, recv, p}) do
+    case simplify(p) do
+      false -> false
+      other -> {:recv, recv, other}
+    end
+  end
+
+  def simplify({:if_recv, recv, p}) do
+    case simplify(p) do
+      false -> {:not, {:recv, recv}}
+      true -> true
+      other -> {:if_recv, recv, other}
     end
   end
 
@@ -467,6 +545,9 @@ defmodule QuickLTL do
   def unfold(false), do: false
   def unfold({:expr, _} = p), do: p
   def unfold({:let, binders, p}), do: {:let, binders, unfold(p)}
+  def unfold({:recv, _} = p), do: p
+  def unfold({:recv, recv, p}), do: {:recv, recv, unfold(p)}
+  def unfold({:if_recv, recv, p}), do: {:if_recv, recv, unfold(p)}
 
   def unfold({:not, p}), do: {:not, unfold(p)}
   def unfold({:and, p, q}), do: {:and, unfold(p), unfold(q)}
@@ -537,6 +618,22 @@ defmodule QuickLTL do
       iex> step(r, %{x: 2})
       prop do let orig: &{:val, 1}, do: false or true end
 
+  The testing process might need to communicate with other modules.
+  We can use `recv`-expression to reason about received messages.
+  It will hold if a message matching the given pattern can be found
+  in the mailbox of the testing process at the current point in time.
+  Note that this predicate is effectful, as it will consume the message!
+
+  iex> send(self(), :foo)
+  iex> step(prop do recv(:foo) and recv(^x) and recv(:bar) end, %{x: :foo})
+  prop do true and false and false end
+
+  Since the `recv`-expression contains general patterns, it may be used
+  as a binder.
+
+  iex> send(self(), {:foo, 2})
+  iex> step(prop do recv({:foo, x}, do: x > 1) end, %{})
+  prop do let x: &{:val, 2}, do: true end
   """
   def step(p, state \\ %{}, env)
 
@@ -559,6 +656,35 @@ defmodule QuickLTL do
   def step({:let, binders, p}, state, env) do
     {binders, env} = eval_binders(binders, state, env)
     {:let, binders, step(p, state, env)}
+  end
+
+  def step({:recv, {eval, _src}}, state, env) do
+    case eval.(state, env) do
+      {:received, _env} -> true
+      :not_received -> false
+    end
+  end
+
+  def step({:recv, {eval, _src}, p}, state, env) do
+    case eval.(state, env) do
+      {:received, captures} ->
+        binders = for {var, value} <- captures, do: {var, {:val, value}}
+        step({:let, binders, p}, state, env)
+
+      :not_received ->
+        false
+    end
+  end
+
+  def step({:if_recv, {eval, _src}, p}, state, env) do
+    case eval.(state, env) do
+      {:received, captures} ->
+        binders = for {var, value} <- captures, do: {var, {:val, value}}
+        step({:let, binders, p}, state, env)
+
+      :not_received ->
+        true
+    end
   end
 
   def step({:not, p}, state, env) do
@@ -604,6 +730,19 @@ defmodule QuickLTL do
         true and true
       end
 
+  Recv-expressions work as in step:any()
+
+      iex> send(self(), :foo)
+      iex> conclude(prop do recv(:foo) and recv(^x) and recv(:bar) end, %{x: :foo})
+      prop do true and false and false end
+
+  Since the `recv`-expression contains general patterns, it may be used
+  as a binder.
+
+      iex> send(self(), {:foo, 2})
+      iex> conclude(prop do recv({:foo, x}, do: x > 1) end, %{})
+      prop do let x: &{:val, 2}, do: true end
+
   The weak next operator will always conclude as true.
 
       iex> p = prop do let x: state.x, do: next_weak(state.x == x + 1) end
@@ -631,6 +770,35 @@ defmodule QuickLTL do
   def conclude({:let, binders, p}, state, env) do
     {binders, env} = eval_binders(binders, state, env)
     {:let, binders, conclude(p, env)}
+  end
+
+  def conclude({:recv, {eval, _src}}, state, env) do
+    case eval.(state, env) do
+      {:received, _env} -> true
+      :not_received -> false
+    end
+  end
+
+  def conclude({:recv, {eval, _src}, p}, state, env) do
+    case eval.(state, env) do
+      {:received, captures} ->
+        binders = for {var, value} <- captures, do: {var, {:val, value}}
+        conclude({:let, binders, p}, state, env)
+
+      :not_received ->
+        false
+    end
+  end
+
+  def conclude({:if_recv, {eval, _src}, p}, state, env) do
+    case eval.(state, env) do
+      {:received, captures} ->
+        binders = for {var, value} <- captures, do: {var, {:val, value}}
+        conclude({:let, binders, p}, state, env)
+
+      :not_received ->
+        true
+    end
   end
 
   def conclude({:not, p}, state, env) do

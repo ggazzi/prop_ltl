@@ -94,6 +94,47 @@ defmodule QuickLTL.SyntaxTest do
       assert eval.(%{}, %{}) == 3
     end
 
+    test "support recv-expressions" do
+      foo = 40
+
+      {:recv, {eval, _src}} =
+        apply_compiler(
+          compile_proposition,
+          recv({^foo, ^bar, ^baz})
+        )
+
+      send(self(), {40, 4, 2})
+      assert eval.(%{bar: 4}, %{baz: 2}) == {:received, []}
+    end
+
+    test "support recv as a binder" do
+      {:recv, {eval, _src}, true} =
+        apply_compiler(
+          compile_proposition,
+          recv {foo, _, bar} do
+            true
+          end
+        )
+
+      send(self(), {40, 4, 2})
+      {:received, captures} = eval.(%{}, %{})
+      assert Map.new(captures) == %{foo: 40, bar: 2}
+    end
+
+    test "support recv as a conditional binder" do
+      {:if_recv, {eval, _src}, true} =
+        apply_compiler(
+          compile_proposition,
+          if recv({foo, _, bar}) do
+            true
+          end
+        )
+
+      send(self(), {40, 4, 2})
+      {:received, captures} = eval.(%{}, %{})
+      assert Map.new(captures) == %{foo: 40, bar: 2}
+    end
+
     test "preserves pins" do
       assert_raise CompileError, ~r/cannot use \^foobar outside of match clauses/, fn ->
         apply_compiler(compile_proposition, ^foobar)
@@ -140,6 +181,76 @@ defmodule QuickLTL.SyntaxTest do
       assert_raise KeyError, ~r/:foo/, fn ->
         eval.(%{bar: 2}, %{})
       end
+    end
+  end
+
+  describe "compile_native_recv/2" do
+    test "works with constant values as patterns" do
+      {eval, _src} = apply_compiler(compile_native_recv, :foo)
+
+      assert eval.(%{}, %{}) == :not_received
+      send(self(), :foo)
+      assert eval.(%{}, %{}) == {:received, []}
+      assert eval.(%{}, %{}) == :not_received
+    end
+
+    test "works with pinned variables from the Elixir scope" do
+      foo = :bar
+      {eval, _src} = apply_compiler(compile_native_recv, ^foo)
+
+      assert eval.(%{}, %{}) == :not_received
+      send(self(), :bar)
+      assert eval.(%{}, %{}) == {:received, []}
+      assert eval.(%{}, %{}) == :not_received
+    end
+
+    test "works with pinned variables from the state and context" do
+      {eval, _src} = apply_compiler(compile_native_recv, ^foo)
+
+      send(self(), :bar)
+      assert eval.(%{foo: :bar}, %{}) == {:received, []}
+
+      send(self(), :baz)
+      assert eval.(%{}, %{foo: :baz}) == {:received, []}
+    end
+
+    test "pinned variables from the Elixir scope have precedence over state and logical environment" do
+      foo = :bar
+      {eval, _src} = apply_compiler(compile_native_recv, ^foo)
+
+      send(self(), :bar)
+      assert eval.(%{foo: :baz}, %{foo: :foobar}) == {:received, []}
+    end
+
+    test "pinned variables from the logical environment have precedence over the state" do
+      {eval, _src} = apply_compiler(compile_native_recv, ^foo)
+
+      send(self(), :baz)
+      assert eval.(%{foo: :bar}, %{foo: :baz}) == {:received, []}
+    end
+
+    test "raises an error when pinned variables are undefined" do
+      {eval, _src} = apply_compiler(compile_native_recv, ^foo)
+
+      assert_raise KeyError, ~r/foo/, fn ->
+        eval.(%{}, %{})
+      end
+    end
+
+    test "returns any captured variables" do
+      {eval, _src} = apply_compiler(compile_native_recv, {:foo, foo, bar})
+
+      send(self(), {:foo, 5, 42})
+      {:received, captures} = eval.(%{baz: :foobar}, %{foo: 0, answer: 42})
+      assert is_list(captures)
+      assert Map.new(captures) == %{foo: 5, bar: 42}
+    end
+
+    test "handles wildcards properly" do
+      {eval, _src} = apply_compiler(compile_native_recv, {:foo, _, _bar})
+
+      send(self(), {:foo, 5, 42})
+      assert eval.(%{baz: :foobar}, %{foo: 0, answer: 42}) == {:received, []}
     end
   end
 end

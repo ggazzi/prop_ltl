@@ -28,7 +28,8 @@ defmodule QuickLTL.MixProject do
     [
       {:stream_data, "~> 0.5.0"},
       {:ex_doc, "~> 0.27", only: [:dev], runtime: false},
-      {:dialyxir, "~> 1.0", only: [:dev], runtime: false}
+      {:dialyxir, "~> 1.0", only: [:dev], runtime: false},
+      {:propcheck, "~> 1.4", only: [:test, :dev]}
     ]
   end
 end

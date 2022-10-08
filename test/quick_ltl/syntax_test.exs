@@ -1,5 +1,5 @@
 defmodule QuickLTL.SyntaxTest do
-  use ExUnit.Case
+  use ExUnit.Case, async: true
   import QuickLTL.Syntax
   doctest QuickLTL.Syntax
 

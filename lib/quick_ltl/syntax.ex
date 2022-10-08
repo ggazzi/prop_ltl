@@ -65,6 +65,43 @@ defmodule QuickLTL.Syntax do
           | {:implies, guarded, guarded}
           | {:next, :weak | :strong, t}
 
+  def atomic?(%QuickLTL{ast: ast}), do: atomic?(ast)
+  def atomic?(p) when is_boolean(p), do: true
+  def atomic?({:expr, {eval, ast}}), do: is_function(eval, 2) and Macro.validate(ast) == :ok
+  def atomic?({:recv, {eval, ast}}), do: is_function(eval, 2) and Macro.validate(ast) == :ok
+  def atomic(_), do: false
+
+  def guarded?(%QuickLTL{ast: ast}), do: guarded?(ast)
+  def guarded?({:let, _binders, p}), do: guarded?(p)
+
+  def guarded?({recv, {eval, ast}, p}) when recv in [:recv, :if_recv] do
+    is_function(eval, 2) and Macro.validate(ast) == :ok and guarded?(p)
+  end
+
+  def guarded?({:not, p}), do: guarded?(p)
+  def guarded?({op, p1, p2}) when op in [:and, :or, :implies], do: guarded?(p1) and guarded?(p2)
+  def guarded?({:next, s, p}) when s in [:weak, :strong], do: valid?(p)
+  def guarded?(p), do: atomic?(p)
+
+  def valid?(%QuickLTL{ast: ast}), do: valid?(ast)
+  def valid?({:let, _binders, p}), do: valid?(p)
+
+  def valid?({recv, {eval, ast}, p}) when recv in [:recv, :if_recv] do
+    is_function(eval, 2) and Macro.validate(ast) == :ok and valid?(p)
+  end
+
+  def valid?({op, p}) when op in [:not, :always, :eventually], do: valid?(p)
+
+  def valid?({op, p1, p2}) when op in [:and, :or, :implies],
+    do: valid?(p1) and valid?(p2)
+
+  def valid?({:next, s, p}) when s in [:weak, :strong], do: valid?(p)
+
+  def valid?({:until, s, p1, p2}) when s in [:weak, :strong],
+    do: valid?(p1) and valid?(p2)
+
+  def valid?(p), do: atomic?(p)
+
   @spec proposition_to_quoted(t) :: Macro.output()
   def proposition_to_quoted(true), do: true
   def proposition_to_quoted(false), do: false
@@ -385,7 +422,7 @@ defmodule QuickLTL.Syntax do
   end
 
   @spec collect_vars(Macro.output()) :: MapSet.t()
-  defp collect_vars(ast) do
+  def collect_vars(ast) do
     Macro.prewalk(ast, MapSet.new(), fn
       {skip, _, [_]}, acc when skip in [:^, :@] ->
         {:ok, acc}

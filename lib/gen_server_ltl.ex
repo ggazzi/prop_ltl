@@ -63,10 +63,31 @@ defmodule GenServerLTL do
     quote do: {unquote(name), %QuickLTL{ast: unquote(compiled)}}
   end
 
+  @type execution_state :: %{
+          :expects_timeout? => boolean,
+          :properties => list,
+          :server_module => atom,
+          :server_state => any,
+          :status => :running,
+          :trace_rev => maybe_improper_list
+        }
+
+  @type execution_event ::
+          {:call, any}
+          | {:cast, any}
+          | {:info, any}
+          | {:call, any, boolean | {any, any} | {any, any, any} | {any, any, any, any} | map}
+          | {:cast, any, boolean | {any, any} | {any, any, any} | {any, any, any, any} | map}
+          | {:info, any, boolean | {any, any} | {any, any, any} | {any, any, any, any} | map}
+
+  @type prop_table :: [{Stringl.t(), QuickLTL.t()}, ...]
+
+  @spec run_execution(atom, any, [execution_event()], prop_table) :: execution_state
   def run_execution(module, init_arg, events, properties) do
     run_execution(events, init_execution(module, init_arg, properties))
   end
 
+  @spec run_execution([execution_event, ...], atom | map) :: execution_state
   def run_execution([final_event], state) do
     conclude_execution(final_event, state)
   end
@@ -75,6 +96,7 @@ defmodule GenServerLTL do
     run_execution(future_events, step_execution(event, state))
   end
 
+  @spec init_execution(atom, any, prop_table) :: execution_state
   def init_execution(module, init_arg, properties) do
     {:ok, server_state} = module.init(init_arg)
 
@@ -90,6 +112,7 @@ defmodule GenServerLTL do
     step_properties(initial_state, &QuickLTL.step/2)
   end
 
+  @spec step_execution(execution_event, execution_state) :: execution_state
   def step_execution({:info, :timeout} = event, state) do
     if state.expects_timeout? do
       state |> step_server(event) |> step_properties(&QuickLTL.step/2)
@@ -102,6 +125,7 @@ defmodule GenServerLTL do
     state |> step_server(event) |> step_properties(&QuickLTL.step/2)
   end
 
+  @spec conclude_execution(execution_event, execution_state) :: execution_state
   def conclude_execution(final_event, state) do
     final_state = state |> step_server(final_event) |> inject_final_timeouts()
 
@@ -116,6 +140,7 @@ defmodule GenServerLTL do
     final_state
   end
 
+  @spec inject_final_timeouts(execution_state) :: execution_state
   defp inject_final_timeouts(state) do
     if state.expects_timeout? do
       state

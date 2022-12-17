@@ -4,9 +4,6 @@ defmodule OnOffTest do
   import GenServerLTL
   import QuickLTL
 
-  import OnOff
-  doctest OnOff
-
   property "satisfies the LTL specification" do
     event =
       one_of([

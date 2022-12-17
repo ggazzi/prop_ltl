@@ -21,7 +21,7 @@ defmodule OnOff do
 
   @impl true
   def handle_info(:timeout, state) do
-    {:noreply, %{state | on?: false, timeout_event: nil}}
+    handle_cast(state.timeout_event, state)
   end
 
   defp react_to_event({:set, on?}, state) do
